@@ -128,6 +128,13 @@ namespace kagome::network {
     // Do first aligning of peers count
     align();
 
+    store_peers_timer_ = scheduler_->scheduleWithHandle(
+        [wp = weak_from_this()] {
+          if (auto self = wp.lock()) {
+            self->storeActivePeers();
+          }
+        },
+        std::chrono::minutes(1));
     return true;
   }
 
@@ -603,10 +610,20 @@ namespace kagome::network {
       SL_ERROR(log_, "Unable to decode list of active peers");
       return {};
     }
+    SL_INFO(log_, "Loaded {} known peers' records", last_active_peers.size());
     return last_active_peers;
   }
 
   void PeerManagerImpl::storeActivePeers() {
+    store_peers_timer_.cancel();
+    store_peers_timer_ = scheduler_->scheduleWithHandle(
+        [wp = weak_from_this()] {
+          if (auto self = wp.lock()) {
+            self->storeActivePeers();
+          }
+        },
+        std::chrono::seconds(30));
+
     std::vector<libp2p::peer::PeerInfo> last_active_peers;
     for (const auto &peer_id : recently_active_peers_) {
       auto peer_info = host_.getPeerRepository().getPeerInfo(peer_id);
@@ -636,9 +653,9 @@ namespace kagome::network {
                save_res.error().message());
       return;
     }
-    SL_DEBUG(log_,
-             "Saved {} last active peers' record(s)",
-             last_active_peers.size());
+    SL_INFO(log_,
+            "Saved {} last active peers' record(s)",
+            last_active_peers.size());
   }
 
 }  // namespace kagome::network

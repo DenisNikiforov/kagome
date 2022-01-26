@@ -59,7 +59,8 @@ namespace kagome::consensus {
         authority_update_observer_{std::move(authority_update_observer)},
         babe_util_(std::move(babe_util)),
         offchain_worker_api_(std::move(offchain_worker_api)),
-        logger_{log::createLogger("BlockExecutor", "block_executor")} {
+        logger_{log::createLogger("BlockExecutor", "block_executor")},
+        tracer_{log::createLogger("BlockExecutorTracer", "tracer")}{
     BOOST_ASSERT(block_tree_ != nullptr);
     BOOST_ASSERT(core_ != nullptr);
     BOOST_ASSERT(babe_configuration_ != nullptr);
@@ -122,6 +123,7 @@ namespace kagome::consensus {
 
     const auto &babe_header = babe_digests.second;
 
+    tracer_->debug( "Applying block {}", block.header.number);
     logger_->info(
         "Applying block {} ({} in slot {})",  //
         primitives::BlockInfo(block.header.number, block_hash),

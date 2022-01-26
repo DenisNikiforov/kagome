@@ -7,6 +7,7 @@
 #define KAGOME_HOST_API_STORAGE_EXTENSION_HPP
 
 #include <cstdint>
+#include <fstream>
 
 #include "log/logger.hpp"
 #include "runtime/types.hpp"
@@ -155,10 +156,14 @@ namespace kagome::host_api {
     runtime::WasmSpan clearPrefix(const common::Buffer &prefix,
                                   std::optional<uint32_t> limit);
 
+    std::shared_ptr<std::ofstream> hugeLogFile(std::string &filename) const;
+
     std::shared_ptr<runtime::TrieStorageProvider> storage_provider_;
     std::shared_ptr<const runtime::MemoryProvider> memory_provider_;
     std::shared_ptr<storage::changes_trie::ChangesTracker> changes_tracker_;
     log::Logger logger_;
+    log::Logger tracer_;
+    mutable uint64_t file_counter_;
 
     constexpr static auto kDefaultLoggerTag = "WASM Runtime [StorageExtension]";
   };

@@ -30,6 +30,8 @@ include/generated/*
 .scannerwork/
 peers.list
 cmake-build*
+debug*/
+release*/
 
 cmake-build*
 .gtm

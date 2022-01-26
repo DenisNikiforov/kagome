@@ -308,6 +308,7 @@ namespace kagome::host_api {
 
   void HostApiImpl::ext_misc_print_utf8_version_1(
       runtime::WasmSpan data) const {
+    child_storage_ext_.print_stats();
     return misc_ext_.ext_misc_print_utf8_version_1(data);
   }
 

@@ -41,11 +41,22 @@ int main(int argc, char **argv) {
                                           kagome::log::defaultGroupName);
   AppConfigurationImpl configuration{logger};
 
+  std::vector trace_groups{
+//      "runtime",
+      "binaryen",
+  };
+
   if (configuration.initializeFromArgs(argc, argv)) {
     kagome::log::tuneLoggingSystem(configuration.log());
 
     auto app = std::make_shared<kagome::application::KagomeApplicationImpl>(
         configuration);
+
+    kagome::log::setLevelOfGroup("tracer", kagome::log::Level::TRACE);
+    for (const auto &group : trace_groups) {
+      kagome::log::setLevelOfGroup(group, kagome::log::Level::DEBUG);
+    }
+
     app->run();
   }
 
