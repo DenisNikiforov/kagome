@@ -39,12 +39,13 @@
 #include "application/app_configuration.hpp"
 #include "application/impl/app_state_manager_impl.hpp"
 #include "application/impl/chain_spec_impl.hpp"
+#include "application/modes/recovery_mode.hpp"
 #include "authorship/impl/block_builder_factory_impl.hpp"
 #include "authorship/impl/block_builder_impl.hpp"
 #include "authorship/impl/proposer_impl.hpp"
+#include "blockchain/impl/block_header_repository_impl.hpp"
+#include "blockchain/impl/block_storage_impl.hpp"
 #include "blockchain/impl/block_tree_impl.hpp"
-#include "blockchain/impl/key_value_block_header_repository.hpp"
-#include "blockchain/impl/key_value_block_storage.hpp"
 #include "blockchain/impl/storage_util.hpp"
 #include "clock/impl/basic_waitable_timer.hpp"
 #include "clock/impl/clock_impl.hpp"
@@ -93,6 +94,7 @@
 #include "offchain/impl/offchain_persistent_storage.hpp"
 #include "offchain/impl/offchain_worker_factory_impl.hpp"
 #include "offchain/impl/offchain_worker_impl.hpp"
+#include "offchain/impl/offchain_worker_pool_impl.hpp"
 #include "outcome/outcome.hpp"
 #include "runtime/binaryen/binaryen_memory_provider.hpp"
 #include "runtime/binaryen/core_api_factory_impl.hpp"
@@ -163,8 +165,6 @@ namespace {
     });
   }
 
-  kagome::storage::trie::RootHash root_hash;
-
   sptr<api::HttpListenerImpl> get_jrpc_api_http_listener(
       application::AppConfiguration const &config,
       sptr<application::AppStateManager> app_state_manager,
@@ -216,9 +216,7 @@ namespace {
   sptr<blockchain::BlockStorage> get_block_storage(
       storage::trie::RootHash state_root,
       sptr<crypto::Hasher> hasher,
-      sptr<storage::BufferStorage> db,
-      sptr<storage::trie::TrieStorage> trie_storage,
-      sptr<runtime::GrandpaApi> grandpa_api) {
+      sptr<storage::BufferStorage> storage) {
     static auto initialized =
         std::optional<sptr<blockchain::BlockStorage>>(std::nullopt);
 
@@ -226,67 +224,18 @@ namespace {
       return initialized.value();
     }
 
-    auto storage_res = blockchain::KeyValueBlockStorage::create(
-        state_root, db, hasher, [&](const primitives::Block &genesis_block) {
-          auto log = log::createLogger("Injector", "injector");
+    auto block_storage_res =
+        blockchain::BlockStorageImpl::create(state_root, storage, hasher);
 
-          auto res = db->tryGet(storage::kSchedulerTreeLookupKey);
-          if (res.has_value() && !res.value().has_value()) {
-            auto hash_res = db->get(storage::kGenesisBlockHashLookupKey);
-            if (not hash_res.has_value()) {
-              log->critical("Can't decode genesis block hash: {}",
-                            hash_res.error().message());
-              common::raise(hash_res.error());
-            }
-
-            primitives::BlockHash hash;
-            std::copy(
-                hash_res.value().begin(), hash_res.value().end(), hash.begin());
-
-            // Get initial authorities from genesis
-            auto authorities_res = grandpa_api->authorities(hash);
-            if (not authorities_res.has_value()) {
-              log->critical("Can't get genesis grandpa authorities: {}",
-                            authorities_res.error().message());
-              common::raise(authorities_res.error());
-            }
-            auto &authorities = authorities_res.value();
-
-            for (const auto &authority : authorities) {
-              SL_DEBUG(log, "Grandpa authority: {:l}", authority.id.id);
-            }
-
-            authorities.id = 0;
-
-            auto node = authority::ScheduleNode::createAsRoot({0, hash});
-            node->actual_authorities =
-                std::make_shared<primitives::AuthorityList>(
-                    std::move(authorities));
-
-            auto data_res = scale::encode(node);
-            if (!data_res.has_value()) {
-              log->critical("Can't encode authority manager state: {}",
-                            data_res.error().message());
-              common::raise(data_res.error());
-            }
-
-            auto save_res = db->put(storage::kSchedulerTreeLookupKey,
-                                    common::Buffer(data_res.value()));
-            if (!save_res.has_value()) {
-              log->critical("Can't store current state: {}",
-                            save_res.error().message());
-              common::raise(save_res.error());
-            }
-          }
-        });
-    if (storage_res.has_error()) {
-      common::raise(storage_res.error());
+    if (block_storage_res.has_error()) {
+      common::raise(block_storage_res.error());
     }
-    auto &storage = storage_res.value();
+    auto &block_storage = block_storage_res.value();
 
-    initialized.emplace(std::move(storage));
+    initialized.emplace(std::move(block_storage));
     return initialized.value();
   }
+
   sptr<storage::trie::TrieStorageBackendImpl> get_trie_storage_backend(
       sptr<storage::BufferStorage> storage) {
     static auto initialized =
@@ -301,6 +250,66 @@ namespace {
         storage, common::Buffer{blockchain::prefix::TRIE_NODE});
 
     initialized.emplace(std::move(backend));
+    return initialized.value();
+  }
+
+  template <typename Injector>
+  std::pair<sptr<storage::trie::TrieStorage>, kagome::storage::trie::RootHash>
+  get_trie_storage_and_root_hash(const Injector &injector) {
+    static auto initialized =
+        std::optional<std::pair<sptr<storage::trie::TrieStorage>,
+                                kagome::storage::trie::RootHash>>(std::nullopt);
+
+    if (initialized) {
+      return initialized.value();
+    }
+
+    auto factory =
+        injector.template create<sptr<storage::trie::PolkadotTrieFactory>>();
+    auto codec = injector.template create<sptr<storage::trie::Codec>>();
+    auto configuration_storage =
+        injector.template create<sptr<application::ChainSpec>>();
+    auto serializer =
+        injector.template create<sptr<storage::trie::TrieSerializer>>();
+    auto tracker =
+        injector.template create<sptr<storage::changes_trie::ChangesTracker>>();
+
+    auto trie_storage_res = storage::trie::TrieStorageImpl::createEmpty(
+        factory, codec, serializer, tracker);
+
+    if (!trie_storage_res) {
+      common::raise(trie_storage_res.error());
+    }
+
+    const auto genesis_raw_configs = configuration_storage->getGenesis();
+    auto &trie_storage = trie_storage_res.value();
+
+    auto batch_res =
+        trie_storage->getPersistentBatchAt(serializer->getEmptyRootHash());
+    if (not batch_res) {
+      common::raise(batch_res.error());
+    }
+    auto batch = std::move(batch_res.value());
+
+    auto log = log::createLogger("Injector", "injector");
+    for (const auto &[key_, val_] : genesis_raw_configs) {
+      auto &key = key_;
+      auto &val = val_;
+      SL_TRACE(
+          log, "Key: {}, Val: {}", key.toHex(), val.toHex().substr(0, 200));
+      if (auto res = batch->put(key, val); not res) {
+        common::raise(res.error());
+      }
+    }
+
+    auto res = batch->commit();
+    if (res.has_error()) {
+      common::raise(res.error());
+    }
+
+    auto &root_hash = res.value();
+
+    initialized.emplace(std::move(trie_storage), root_hash);
     return initialized.value();
   }
 
@@ -576,17 +585,11 @@ namespace {
     if (initialized) {
       return initialized.value();
     }
+
     auto header_repo =
         injector.template create<sptr<blockchain::BlockHeaderRepository>>();
 
     auto storage = injector.template create<sptr<blockchain::BlockStorage>>();
-
-    auto last_finalized_block_res = storage->getLastFinalizedBlockHash();
-
-    const auto block_id =
-        last_finalized_block_res.has_value()
-            ? primitives::BlockId{last_finalized_block_res.value()}
-            : primitives::BlockId{0};
 
     auto extrinsic_observer =
         injector.template create<sptr<network::ExtrinsicObserver>>();
@@ -614,7 +617,6 @@ namespace {
     auto block_tree_res =
         blockchain::BlockTreeImpl::create(header_repo,
                                           std::move(storage),
-                                          std::move(block_id),
                                           std::move(extrinsic_observer),
                                           std::move(hasher),
                                           chain_events_engine,
@@ -822,7 +824,7 @@ namespace {
           auto storage =
               injector.template create<sptr<storage::BufferStorage>>();
           auto substitutes = injector.template create<
-              sptr<const primitives::CodeSubstituteHashes>>();
+              sptr<const primitives::CodeSubstituteBlockIds>>();
           auto res = runtime::RuntimeUpgradeTrackerImpl::create(
               std::move(header_repo),
               std::move(storage),
@@ -888,6 +890,7 @@ namespace {
         di::bind<runtime::OffchainWorkerApi>.template to<runtime::OffchainWorkerApiImpl>(),
         di::bind<offchain::OffchainWorkerFactory>.template to<offchain::OffchainWorkerFactoryImpl>(),
         di::bind<offchain::OffchainWorker>.template to<offchain::OffchainWorkerImpl>(),
+        di::bind<offchain::OffchainWorkerPool>.template to<offchain::OffchainWorkerPoolImpl>(),
         di::bind<offchain::OffchainPersistentStorage>.template to<offchain::OffchainPersistentStorageImpl>(),
         di::bind<offchain::OffchainLocalStorage>.template to<offchain::OffchainLocalStorageImpl>(),
         di::bind<runtime::Metadata>.template to<runtime::MetadataImpl>(),
@@ -939,7 +942,7 @@ namespace {
 
         di::bind<application::AppStateManager>.template to<application::AppStateManagerImpl>(),
         di::bind<application::AppConfiguration>.to(config),
-        di::bind<primitives::CodeSubstituteHashes>.to(
+        di::bind<primitives::CodeSubstituteBlockIds>.to(
             get_chain_spec(config)->codeSubstitutes()),
 
         // compose peer keypair
@@ -1048,19 +1051,15 @@ namespace {
           return get_level_db(config, chain_spec);
         }),
         di::bind<blockchain::BlockStorage>.to([](const auto &injector) {
+          auto root_hash = get_trie_storage_and_root_hash(injector).second;
           const auto &hasher = injector.template create<sptr<crypto::Hasher>>();
-          const auto &db =
+          const auto &storage =
               injector.template create<sptr<storage::BufferStorage>>();
-          const auto &trie_storage =
-              injector.template create<sptr<storage::trie::TrieStorage>>();
-          const auto &grandpa_api =
-              injector.template create<sptr<runtime::GrandpaApi>>();
-          return get_block_storage(
-              root_hash, hasher, db, trie_storage, grandpa_api);
+          return get_block_storage(root_hash, hasher, storage);
         }),
         di::bind<blockchain::BlockTree>.to(
             [](auto const &injector) { return get_block_tree(injector); }),
-        di::bind<blockchain::BlockHeaderRepository>.template to<blockchain::KeyValueBlockHeaderRepository>(),
+        di::bind<blockchain::BlockHeaderRepository>.template to<blockchain::BlockHeaderRepositoryImpl>(),
         di::bind<clock::SystemClock>.template to<clock::SystemClockImpl>(),
         di::bind<clock::SteadyClock>.template to<clock::SteadyClockImpl>(),
         di::bind<clock::Timer>.template to<clock::BasicWaitableTimer>(),
@@ -1071,11 +1070,10 @@ namespace {
         }),
         di::bind<primitives::BabeConfiguration>.to([](auto const &injector) {
           // need it to add genesis block if it's not there
-          auto block_storage =
-              injector.template create<sptr<blockchain::BlockStorage>>();
+          auto genesis_block_header =
+              injector.template create<sptr<primitives::GenesisBlockHeader>>();
           auto babe_api = injector.template create<sptr<runtime::BabeApi>>();
-          return get_babe_configuration(
-              block_storage->getGenesisBlockHash().value(), babe_api);
+          return get_babe_configuration(genesis_block_header->hash, babe_api);
         }),
         di::bind<network::Synchronizer>.template to<network::SynchronizerImpl>(),
         di::bind<consensus::grandpa::Environment>.template to<consensus::grandpa::EnvironmentImpl>(),
@@ -1113,54 +1111,8 @@ namespace {
                   injector.template create<sptr<storage::BufferStorage>>();
               return get_trie_storage_backend(storage);
             }),
-        bind_by_lambda<storage::trie::TrieStorage>([](auto const &injector) {
-          auto factory =
-              injector
-                  .template create<sptr<storage::trie::PolkadotTrieFactory>>();
-          auto codec = injector.template create<sptr<storage::trie::Codec>>();
-          auto configuration_storage =
-              injector.template create<sptr<application::ChainSpec>>();
-          auto serializer =
-              injector.template create<sptr<storage::trie::TrieSerializer>>();
-          auto tracker = injector.template create<
-              sptr<storage::changes_trie::ChangesTracker>>();
-          auto trie_storage_res = storage::trie::TrieStorageImpl::createEmpty(
-              factory, codec, serializer, tracker);
-
-          if (!trie_storage_res) {
-            common::raise(trie_storage_res.error());
-          }
-
-          const auto genesis_raw_configs = configuration_storage->getGenesis();
-          auto &trie_storage = trie_storage_res.value();
-
-          auto batch_res = trie_storage->getPersistentBatchAt(
-              serializer->getEmptyRootHash());
-          if (not batch_res) {
-            common::raise(batch_res.error());
-          }
-          auto batch = std::move(batch_res.value());
-
-          auto log = log::createLogger("Injector", "injector");
-
-          for (const auto &[key_, val_] : genesis_raw_configs) {
-            auto &key = key_;
-            auto &val = val_;
-            SL_TRACE(log,
-                     "Key: {}, Val: {}",
-                     key.toHex(),
-                     val.toHex().substr(0, 200));
-            if (auto res = batch->put(key, val); not res) {
-              common::raise(res.error());
-            }
-          }
-          if (auto res = batch->commit(); not res) {
-            common::raise(res.error());
-          } else {
-            root_hash = res.value();
-          }
-          sptr<storage::trie::TrieStorage> trie = std::move(trie_storage);
-          return trie;
+        di::bind<storage::trie::TrieStorage>.to([](auto const &injector) {
+          return get_trie_storage_and_root_hash(injector).first;
         }),
         di::bind<storage::trie::PolkadotTrieFactory>.template to<storage::trie::PolkadotTrieFactoryImpl>(),
         di::bind<storage::trie::Codec>.template to<storage::trie::PolkadotCodec>(),
@@ -1195,6 +1147,11 @@ namespace {
         di::bind<network::BlockAnnounceTransmitter>.template to<network::BlockAnnounceTransmitterImpl>(),
         di::bind<network::GrandpaTransmitter>.template to<network::GrandpaTransmitterImpl>(),
         di::bind<network::TransactionsTransmitter>.template to<network::TransactionsTransmitterImpl>(),
+        di::bind<primitives::GenesisBlockHeader>.to([](auto const &injector) {
+          return get_genesis_block_header(injector);
+        }),
+        di::bind<application::mode::RecoveryMode>.to(
+            [](auto const &injector) { return get_recovery_mode(injector); }),
 
         // user-defined overrides...
         std::forward<decltype(args)>(args)...);
@@ -1266,7 +1223,6 @@ namespace {
     initialized = std::make_shared<consensus::babe::BabeImpl>(
         injector.template create<sptr<application::AppStateManager>>(),
         injector.template create<sptr<consensus::BabeLottery>>(),
-        injector.template create<sptr<storage::trie::TrieStorage>>(),
         injector.template create<sptr<primitives::BabeConfiguration>>(),
         injector.template create<sptr<authorship::Proposer>>(),
         injector.template create<sptr<blockchain::BlockTree>>(),
@@ -1331,12 +1287,79 @@ namespace {
         injector.template create<sptr<authority::AuthorityManager>>(),
         injector.template create<sptr<network::Synchronizer>>(),
         injector.template create<sptr<network::PeerManager>>(),
-        injector.template create<sptr<blockchain::BlockStorage>>());
+        injector.template create<sptr<blockchain::BlockTree>>());
 
     auto protocol_factory =
         injector.template create<std::shared_ptr<network::ProtocolFactory>>();
 
     protocol_factory->setGrandpaObserver(initialized.value());
+
+    return initialized.value();
+  }
+
+  template <typename Injector>
+  sptr<primitives::GenesisBlockHeader> get_genesis_block_header(
+      const Injector &injector) {
+    static auto initialized =
+        std::optional<sptr<primitives::GenesisBlockHeader>>(std::nullopt);
+    if (initialized) {
+      return initialized.value();
+    }
+
+    auto block_storage =
+        injector.template create<sptr<blockchain::BlockStorage>>();
+    auto block_header_repository =
+        injector.template create<sptr<blockchain::BlockHeaderRepository>>();
+
+    auto hash_res =
+        block_header_repository->getHashByNumber(primitives::BlockNumber(0));
+    BOOST_ASSERT(hash_res.has_value());
+    auto &hash = hash_res.value();
+
+    auto header_res = block_storage->getBlockHeader(hash);
+    BOOST_ASSERT(header_res.has_value());
+    auto &header_opt = header_res.value();
+    BOOST_ASSERT(header_opt.has_value());
+
+    initialized.emplace(new primitives::GenesisBlockHeader(
+        {.header = header_opt.value(), .hash = hash}));
+
+    return initialized.value();
+  }
+
+  template <typename Injector>
+  sptr<application::mode::RecoveryMode> get_recovery_mode(
+      const Injector &injector) {
+    static auto initialized =
+        std::optional<sptr<application::mode::RecoveryMode>>(std::nullopt);
+    if (initialized) {
+      return initialized.value();
+    }
+
+    const auto &app_config =
+        injector.template create<const application::AppConfiguration &>();
+    auto storage = injector.template create<sptr<blockchain::BlockStorage>>();
+    auto header_repo =
+        injector.template create<sptr<blockchain::BlockHeaderRepository>>();
+    auto trie_storage =
+        injector.template create<sptr<const storage::trie::TrieStorage>>();
+
+    initialized.emplace(new application::mode::RecoveryMode(
+        [&app_config,
+         storage = std::move(storage),
+         header_repo = std::move(header_repo),
+         trie_storage = std::move(trie_storage)] {
+          auto res = blockchain::BlockTreeImpl::recover(
+              app_config, storage, header_repo, trie_storage);
+          auto log = log::createLogger("RecoveryMode", "main");
+          if (res.has_error()) {
+            SL_ERROR(
+                log, "Recovery mode has failed: {}", res.error().message());
+            log->flush();
+            return EXIT_FAILURE;
+          }
+          return EXIT_SUCCESS;
+        }));
 
     return initialized.value();
   }
@@ -1364,13 +1387,12 @@ namespace {
 }  // namespace
 
 namespace kagome::injector {
-
   class KagomeNodeInjectorImpl {
    public:
     using Injector = decltype(makeKagomeNodeInjector(
         std::declval<application::AppConfiguration const &>()));
 
-    KagomeNodeInjectorImpl(Injector injector)
+    explicit KagomeNodeInjectorImpl(Injector injector)
         : injector_{std::move(injector)} {}
     Injector injector_;
   };
@@ -1454,6 +1476,11 @@ namespace kagome::injector {
   std::shared_ptr<metrics::MetricsWatcher>
   KagomeNodeInjector::injectMetricsWatcher() {
     return pimpl_->injector_.create<sptr<metrics::MetricsWatcher>>();
+  }
+
+  std::shared_ptr<application::mode::RecoveryMode>
+  KagomeNodeInjector::injectRecoveryMode() {
+    return pimpl_->injector_.create<sptr<application::mode::RecoveryMode>>();
   }
 
 }  // namespace kagome::injector

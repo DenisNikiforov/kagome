@@ -10,31 +10,23 @@
 #include "storage/trie/polkadot_trie/polkadot_trie_impl.hpp"
 #include "storage/trie/serialization/trie_serializer_impl.hpp"
 
-OUTCOME_CPP_DEFINE_CATEGORY(kagome::blockchain, Error, e) {
-  switch (e) {
-    case kagome::blockchain::Error::BLOCK_NOT_FOUND:
-      return "Block with such ID is not found";
-  }
-  return "Unknown error";
-}
-
 namespace kagome::blockchain {
 
   outcome::result<std::optional<common::Buffer>> idToLookupKey(
       const ReadableBufferMap &map, const primitives::BlockId &id) {
-    OUTCOME_TRY(
-        key_opt,
-        visit_in_place(
-            id,
-            [&map](const primitives::BlockNumber &n) {
-              auto key = prependPrefix(numberToIndexKey(n),
-                                       prefix::Prefix::ID_TO_LOOKUP_KEY);
-              return map.tryGet(key);
-            },
-            [&map](const common::Hash256 &hash) {
-              return map.tryGet(prependPrefix(
-                  common::Buffer{hash}, prefix::Prefix::ID_TO_LOOKUP_KEY));
-            }));
+    auto key = visit_in_place(
+        id,
+        [](const primitives::BlockNumber &n) {
+          return prependPrefix(numberToIndexKey(n),
+                               prefix::Prefix::ID_TO_LOOKUP_KEY);
+        },
+        [](const common::Hash256 &hash) {
+          return prependPrefix(common::Buffer{hash},
+                               prefix::Prefix::ID_TO_LOOKUP_KEY);
+        });
+
+    OUTCOME_TRY(key_opt, map.tryGet(key));
+
     return key_opt;
   }
 

@@ -34,6 +34,11 @@ namespace kagome::blockchain {
     virtual ~BlockTree() = default;
 
     /**
+     * @returns hash of genesis block
+     */
+    virtual const primitives::BlockHash &getGenesisBlockHash() const = 0;
+
+    /**
      * Checks containing of block header by provided block id
      * @param block id of the block header we are checking
      * @return containing block header or does not, or error
@@ -119,6 +124,14 @@ namespace kagome::blockchain {
      * repeated until a successful insertion happens
      */
     virtual outcome::result<void> addBlock(const primitives::Block &block) = 0;
+
+    /**
+     * Remove block
+     * @param block_hash - hash of block to be deleted. The block must be leaf.
+     * @return nothing or error
+     */
+    virtual outcome::result<void> removeBlock(
+        const primitives::BlockHash &block_hash) = 0;
 
     /**
      * Mark the block as finalized and store a finalization justification
@@ -241,7 +254,7 @@ namespace kagome::blockchain {
      * Search starts of block with hash {@param block_hash}.
      * @returns epoch descriptor, or error if it impossible.
      */
-    virtual outcome::result<consensus::EpochDigest> getEpochDescriptor(
+    virtual outcome::result<consensus::EpochDigest> getEpochDigest(
         consensus::EpochNumber epoch_number,
         primitives::BlockHash block_hash) const = 0;
   };

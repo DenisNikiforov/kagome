@@ -15,6 +15,7 @@
 
 #include <optional>
 
+#include "application/app_configuration.hpp"
 #include "blockchain/block_header_repository.hpp"
 #include "blockchain/block_storage.hpp"
 #include "blockchain/block_tree_error.hpp"
@@ -29,6 +30,7 @@
 #include "primitives/babe_configuration.hpp"
 #include "primitives/event_types.hpp"
 #include "runtime/runtime_api/core.hpp"
+#include "storage/trie/trie_storage.hpp"
 #include "subscription/extrinsic_event_key_repository.hpp"
 
 namespace kagome::storage::changes_trie {
@@ -55,7 +57,6 @@ namespace kagome::blockchain {
     static outcome::result<std::shared_ptr<BlockTreeImpl>> create(
         std::shared_ptr<BlockHeaderRepository> header_repo,
         std::shared_ptr<BlockStorage> storage,
-        const primitives::BlockId &last_finalized_block,
         std::shared_ptr<network::ExtrinsicObserver> extrinsic_observer,
         std::shared_ptr<crypto::Hasher> hasher,
         primitives::events::ChainSubscriptionEnginePtr chain_events_engine,
@@ -68,7 +69,16 @@ namespace kagome::blockchain {
         std::shared_ptr<primitives::BabeConfiguration> babe_configuration,
         std::shared_ptr<consensus::BabeUtil> babe_util);
 
+    /// Do recover block tree stare to provided block
+    static outcome::result<void> recover(
+        const application::AppConfiguration &app_config,
+        std::shared_ptr<BlockStorage> storage,
+        std::shared_ptr<BlockHeaderRepository> header_repo,
+        std::shared_ptr<const storage::trie::TrieStorage> trie_storage);
+
     ~BlockTreeImpl() override = default;
+
+    const primitives::BlockHash &getGenesisBlockHash() const override;
 
     outcome::result<bool> hasBlockHeader(
         const primitives::BlockId &block) const override;
@@ -86,6 +96,9 @@ namespace kagome::blockchain {
         const primitives::BlockHeader &header) override;
 
     outcome::result<void> addBlock(const primitives::Block &block) override;
+
+    outcome::result<void> removeBlock(
+        const primitives::BlockHash &block_hash) override;
 
     outcome::result<void> addExistingBlock(
         const primitives::BlockHash &block_hash,
@@ -138,7 +151,7 @@ namespace kagome::blockchain {
 
     primitives::BlockInfo getLastFinalized() const override;
 
-    outcome::result<consensus::EpochDigest> getEpochDescriptor(
+    outcome::result<consensus::EpochDigest> getEpochDigest(
         consensus::EpochNumber epoch_number,
         primitives::BlockHash block_hash) const override;
 
@@ -160,7 +173,6 @@ namespace kagome::blockchain {
             extrinsic_event_key_repo,
         std::shared_ptr<runtime::Core> runtime_core,
         std::shared_ptr<storage::changes_trie::ChangesTracker> changes_tracker,
-        std::shared_ptr<primitives::BabeConfiguration> babe_configuration,
         std::shared_ptr<consensus::BabeUtil> babe_util);
 
     /**
@@ -188,6 +200,8 @@ namespace kagome::blockchain {
     outcome::result<void> prune(
         const std::shared_ptr<TreeNode> &lastFinalizedNode);
 
+    outcome::result<void> reorganize();
+
     std::shared_ptr<BlockHeaderRepository> header_repo_;
     std::shared_ptr<BlockStorage> storage_;
 
@@ -203,9 +217,11 @@ namespace kagome::blockchain {
     std::shared_ptr<runtime::Core> runtime_core_;
     std::shared_ptr<storage::changes_trie::ChangesTracker>
         trie_changes_tracker_;
-    std::shared_ptr<primitives::BabeConfiguration> babe_configuration_;
     std::shared_ptr<const consensus::BabeUtil> babe_util_;
+
+    std::optional<primitives::BlockHash> genesis_block_hash_;
     std::optional<primitives::Version> actual_runtime_version_;
+
     log::Logger log_ = log::createLogger("BlockTree", "blockchain");
 
     // Metrics
