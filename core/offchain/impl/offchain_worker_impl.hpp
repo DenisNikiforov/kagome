@@ -33,6 +33,7 @@ namespace kagome::runtime {
 using namespace std::chrono_literals;
 
 namespace kagome::offchain {
+  class OffchainWorkerPool;
 
   class OffchainWorkerImpl final
       : public OffchainWorker,
@@ -52,7 +53,8 @@ namespace kagome::offchain {
         const network::OwnPeerInfo &current_peer_info,
         std::shared_ptr<OffchainPersistentStorage> persistent_storage,
         std::shared_ptr<runtime::Executor> executor,
-        const primitives::BlockHeader &header);
+        const primitives::BlockHeader &header,
+        std::shared_ptr<OffchainWorkerPool> ocw_pool);
 
     outcome::result<void> run() override;
 
@@ -70,20 +72,19 @@ namespace kagome::offchain {
     RandomSeed randomSeed() override;
 
     void localStorageSet(StorageType storage_type,
-                         const common::Buffer &key,
+                         const common::BufferView &key,
                          common::Buffer value) override;
 
     void localStorageClear(StorageType storage_type,
-                           const common::Buffer &key) override;
+                           const common::BufferView &key) override;
 
-    bool localStorageCompareAndSet(
-        StorageType storage_type,
-        const common::Buffer &key,
-        std::optional<std::reference_wrapper<const common::Buffer>> expected,
-        common::Buffer value) override;
+    bool localStorageCompareAndSet(StorageType storage_type,
+                                   const common::BufferView &key,
+                                   std::optional<common::BufferView> expected,
+                                   common::Buffer value) override;
 
     outcome::result<common::Buffer> localStorageGet(
-        StorageType storage_type, const common::Buffer &key) override;
+        StorageType storage_type, const common::BufferView &key) override;
 
     Result<RequestId, Failure> httpRequestStart(HttpMethod method,
                                                 std::string_view uri,
@@ -126,6 +127,7 @@ namespace kagome::offchain {
     std::shared_ptr<runtime::Executor> executor_;
     const primitives::BlockHeader header_;
     const primitives::BlockInfo block_;
+    std::shared_ptr<OffchainWorkerPool> ocw_pool_;
     log::Logger log_;
 
     int16_t request_id_ = 0;

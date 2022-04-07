@@ -27,6 +27,7 @@ add_library(babe_digests_util
 target_link_libraries(babe_digests_util
     primitives
     scale::scale
+    block_storage_error
     )
 
 add_library(block_executor
@@ -39,6 +40,9 @@ target_link_libraries(block_executor
     block_tree_error
     threshold_util
     transaction_pool_error
+    babe_digests_util
+    metrics
+    blockchain_common
     )
 
 add_library(babe_util
@@ -47,6 +51,7 @@ add_library(babe_util
 target_link_libraries(babe_util
     primitives
     scale::scale
+    babe_digests_util
     )
 
 add_library(babe
@@ -68,4 +73,5 @@ target_link_libraries(babe
     block_executor
     polkadot_trie
     metrics
+    block_storage_error
     )

@@ -23,6 +23,7 @@
 #include "blockchain/block_storage.hpp"
 #include "blockchain/block_tree.hpp"
 #include "clock/clock.hpp"
+#include "consensus/grandpa/voting_round.hpp"
 #include "crypto/hasher.hpp"
 #include "log/logger.hpp"
 #include "metrics/metrics.hpp"
@@ -39,6 +40,16 @@
 #include "storage/buffer_map_types.hpp"
 
 namespace kagome::network {
+
+  enum class PeerType {
+    PEER_TYPE_IN = 0,
+    PEER_TYPE_OUT
+  };
+
+  struct PeerDescriptor {
+    PeerType peer_type;
+    clock::SteadyClock::TimePoint time_point;
+  };
 
   class PeerManagerImpl : public PeerManager,
                           public std::enable_shared_from_this<PeerManagerImpl> {
@@ -57,7 +68,8 @@ namespace kagome::network {
         const BootstrapNodes &bootstrap_nodes,
         const OwnPeerInfo &own_peer_info,
         std::shared_ptr<network::Router> router,
-        std::shared_ptr<storage::BufferStorage> storage);
+        std::shared_ptr<storage::BufferStorage> storage,
+        std::shared_ptr<crypto::Hasher> hasher);
 
     /** @see AppStateManager::takeControl */
     bool prepare();
@@ -90,15 +102,20 @@ namespace kagome::network {
     /** @see PeerManager::startPingingPeer */
     void startPingingPeer(const PeerId &peer_id) override;
 
-    /** @see PeerManager::updatePeerStatus */
-    void updatePeerStatus(const PeerId &peer_id, const Status &status) override;
+    /** @see PeerManager::updatePeerState */
+    void updatePeerState(const PeerId &peer_id, const Status &status) override;
 
-    /** @see PeerManager::updatePeerStatus */
-    void updatePeerStatus(const PeerId &peer_id,
-                          const BlockInfo &best_block) override;
+    /** @see PeerManager::updatePeerState */
+    void updatePeerState(const PeerId &peer_id,
+                         const BlockAnnounce &announce) override;
 
-    /** @see PeerManager::getStatus */
-    std::optional<Status> getPeerStatus(const PeerId &peer_id) override;
+    /** @see PeerManager::updatePeerState */
+    void updatePeerState(
+        const PeerId &peer_id,
+        const GrandpaNeighborMessage &neighbor_message) override;
+
+    /** @see PeerManager::getPeerState */
+    std::optional<PeerState> getPeerState(const PeerId &peer_id) override;
 
    private:
     /// Right way to check self peer as it takes into account dev mode
@@ -135,6 +152,7 @@ namespace kagome::network {
     const OwnPeerInfo &own_peer_info_;
     std::shared_ptr<network::Router> router_;
     std::shared_ptr<storage::BufferStorage> storage_;
+    std::shared_ptr<crypto::Hasher> hasher_;
 
     libp2p::event::Handle add_peer_handle_;
     std::unordered_set<PeerId> peers_in_queue_;
@@ -143,12 +161,8 @@ namespace kagome::network {
     std::unordered_set<libp2p::network::ConnectionManager::ConnectionSPtr>
         pinging_connections_;
 
-    struct ActivePeerData {
-      clock::SteadyClock::TimePoint time;
-      Status status{};
-    };
-
-    std::map<PeerId, ActivePeerData> active_peers_;
+    std::map<PeerId, PeerDescriptor> active_peers_;
+    std::unordered_map<PeerId, PeerState> peer_states_;
     libp2p::basic::Scheduler::Handle align_timer_;
     libp2p::basic::Scheduler::Handle store_peers_timer_;
     std::set<PeerId> recently_active_peers_;

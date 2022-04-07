@@ -103,6 +103,17 @@ namespace kagome::application {
                 (const, override));
 
     MOCK_METHOD(bool, isOffchainIndexingEnabled, (), (const, override));
+
+    MOCK_METHOD(std::optional<primitives::BlockId>,
+                recoverState,
+                (),
+                (const, override));
+
+    MOCK_METHOD(uint32_t, outPeers, (), (const, override));
+
+    MOCK_METHOD(uint32_t, inPeers, (), (const, override));
+
+    MOCK_METHOD(uint32_t, inPeersLght, (), (const, override));
   };
 
 }  // namespace kagome::application

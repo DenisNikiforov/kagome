@@ -4,10 +4,8 @@
 #
 
 add_library(blockchain_common
-    types.cpp
-    common.hpp
+    common.cpp
     storage_util.cpp
-    storage_util.hpp
     )
 target_link_libraries(blockchain_common
     blob
@@ -29,6 +27,7 @@ add_library(block_tree
     )
 target_link_libraries(block_tree
     block_tree_error
+    block_storage_error
     blockchain_common
     hasher
     metrics

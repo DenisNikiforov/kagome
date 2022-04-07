@@ -106,13 +106,13 @@ namespace kagome::runtime {
       }
     }
 
-    auto opt_heap_base = instance->getGlobal("__heap_base");
-    if (!opt_heap_base.has_value() || !opt_heap_base.value()) {
+    OUTCOME_TRY(opt_heap_base, instance->getGlobal("__heap_base"));
+    if (!opt_heap_base.has_value()) {
       parent_factory->logger_->error(
-          "Failed to obtain __heap_base from a runtime module; Reason: ");
+          "__heap_base global variable is not found in a runtime module");
       return Error::ABSENT_HEAP_BASE;
     }
-    int32_t heap_base = boost::get<int32_t>(opt_heap_base.value().value());
+    int32_t heap_base = boost::get<int32_t>(opt_heap_base.value());
 
     OUTCOME_TRY(env.memory_provider->resetMemory(heap_base));
 
@@ -120,7 +120,7 @@ namespace kagome::runtime {
     auto heappages_res =
         env.storage_provider->getCurrentBatch()->get(heappages_key);
     if (heappages_res.has_value()) {
-      auto &&heappages = heappages_res.value();
+      const auto &heappages = heappages_res.value().get();
       if (sizeof(uint64_t) != heappages.size()) {
         parent_factory->logger_->error(
             "Unable to read :heappages value. Type size mismatch. "

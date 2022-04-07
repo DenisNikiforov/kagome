@@ -51,7 +51,9 @@ namespace kagome::consensus::grandpa {
                 (const PeerId &peer_id, const CatchUpResponse &),
                 (override));
 
-    MOCK_METHOD(void, executeNextRound, (), (override));
+    MOCK_METHOD(void, executeNextRound, (RoundNumber round_number), (override));
+
+    MOCK_METHOD(void, updateNextRound, (RoundNumber round_number), (override));
   };
 
 }  // namespace kagome::consensus::grandpa

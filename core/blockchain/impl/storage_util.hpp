@@ -45,11 +45,14 @@ namespace kagome::blockchain {
    */
   enum class KeyValueRepositoryError { INVALID_KEY = 1 };
 
+  outcome::result<void> putNumberToIndexKey(storage::BufferStorage &map,
+                                            const primitives::BlockInfo &block);
+
   /**
    * Concatenate \param key_column with \param key
    * @return key_column|key
    */
-  common::Buffer prependPrefix(const common::Buffer &key,
+  common::Buffer prependPrefix(common::BufferView key,
                                prefix::Prefix key_column);
 
   /**
@@ -111,7 +114,7 @@ namespace kagome::blockchain {
    * Convert lookup key to a block number
    */
   outcome::result<primitives::BlockNumber> lookupKeyToNumber(
-      const common::Buffer &key);
+      const common::BufferView &key);
 
 }  // namespace kagome::blockchain
 

@@ -52,10 +52,18 @@ int main(int argc, char **argv) {
     auto app = std::make_shared<kagome::application::KagomeApplicationImpl>(
         configuration);
 
+
+    // Recovery mode
+    if (configuration.recoverState().has_value()) {
+      return app->recovery();
+    }
+
     kagome::log::setLevelOfGroup("tracer", kagome::log::Level::TRACE);
     for (const auto &group : trace_groups) {
       kagome::log::setLevelOfGroup(group, kagome::log::Level::DEBUG);
     }
+
+
 
     app->run();
   }

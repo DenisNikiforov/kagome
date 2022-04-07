@@ -34,6 +34,11 @@ namespace kagome::blockchain {
     virtual ~BlockTree() = default;
 
     /**
+     * @returns hash of genesis block
+     */
+    virtual const primitives::BlockHash &getGenesisBlockHash() const = 0;
+
+    /**
      * Checks containing of block header by provided block id
      * @param block id of the block header we are checking
      * @return containing block header or does not, or error
@@ -121,6 +126,14 @@ namespace kagome::blockchain {
     virtual outcome::result<void> addBlock(const primitives::Block &block) = 0;
 
     /**
+     * Remove leaf
+     * @param block_hash - hash of block to be deleted. The block must be leaf.
+     * @return nothing or error
+     */
+    virtual outcome::result<void> removeLeaf(
+        const primitives::BlockHash &block_hash) = 0;
+
+    /**
      * Mark the block as finalized and store a finalization justification
      * @param block to be finalized
      * @param justification of the finalization
@@ -143,16 +156,22 @@ namespace kagome::blockchain {
     enum class GetChainDirection { ASCEND, DESCEND };
 
     /**
-     * Get a chain of blocks from the (\param block)
+     * Get a chain of blocks from provided block to best block direction
      * @param block, from which the chain is started
-     * @param ascending - if true, the chain will grow up from the provided
-     * block (it is the lowest one); if false, down
      * @param maximum number of blocks to be retrieved
      * @return chain or blocks or error
      */
-    virtual BlockHashVecRes getChainByBlock(const primitives::BlockHash &block,
-                                            GetChainDirection ascending,
-                                            uint64_t maximum) const = 0;
+    virtual BlockHashVecRes getBestChainFromBlock(
+        const primitives::BlockHash &block, uint64_t maximum) const = 0;
+
+    /**
+     * Get a chain of blocks before provided block including its
+     * @param block, to which the chain is ended
+     * @param maximum number of blocks to be retrieved
+     * @return chain or blocks or error
+     */
+    virtual BlockHashVecRes getDescendingChainToBlock(
+        const primitives::BlockHash &block, uint64_t maximum) const = 0;
 
     /**
      * Get a chain of blocks
@@ -178,8 +197,8 @@ namespace kagome::blockchain {
 
     /**
      * Check if one block is ancestor of second one (direct chain exists)
-     * @param ancestor - block, which is at the top of the chain
-     * @param descendant - block, which is the bottom of the chain
+     * @param ancestor - block, which is closest to the genesis
+     * @param descendant - block, which is farthest from the genesis
      * @return true if \param ancestor is ancestor of \param descendant
      */
     virtual bool hasDirectChain(
@@ -241,7 +260,7 @@ namespace kagome::blockchain {
      * Search starts of block with hash {@param block_hash}.
      * @returns epoch descriptor, or error if it impossible.
      */
-    virtual outcome::result<consensus::EpochDigest> getEpochDescriptor(
+    virtual outcome::result<consensus::EpochDigest> getEpochDigest(
         consensus::EpochNumber epoch_number,
         primitives::BlockHash block_hash) const = 0;
   };

@@ -25,19 +25,27 @@ OUTCOME_CPP_DEFINE_CATEGORY(kagome::blockchain, KeyValueRepositoryError, e) {
 
 namespace kagome::blockchain {
 
+  outcome::result<void> putNumberToIndexKey(
+      storage::BufferStorage &map, const primitives::BlockInfo &block) {
+    auto num_to_idx_key =
+        prependPrefix(numberToIndexKey(block.number), Prefix::ID_TO_LOOKUP_KEY);
+    auto block_lookup_key = numberAndHashToLookupKey(block.number, block.hash);
+    return map.put(num_to_idx_key, block_lookup_key);
+  }
+
   outcome::result<void> putWithPrefix(storage::BufferStorage &map,
                                       prefix::Prefix prefix,
                                       BlockNumber num,
                                       Hash256 block_hash,
                                       const common::Buffer &value) {
     auto block_lookup_key = numberAndHashToLookupKey(num, block_hash);
-    auto value_lookup_key = prependPrefix(block_lookup_key, prefix);
-    auto num_to_idx_key =
-        prependPrefix(numberToIndexKey(num), Prefix::ID_TO_LOOKUP_KEY);
+
     auto hash_to_idx_key =
         prependPrefix(Buffer{block_hash}, Prefix::ID_TO_LOOKUP_KEY);
-    OUTCOME_TRY(map.put(num_to_idx_key, block_lookup_key));
     OUTCOME_TRY(map.put(hash_to_idx_key, block_lookup_key));
+
+    auto value_lookup_key = prependPrefix(block_lookup_key, prefix);
+
     return map.put(value_lookup_key, value);
   }
 
@@ -45,7 +53,8 @@ namespace kagome::blockchain {
                                       prefix::Prefix prefix,
                                       const primitives::BlockId &block_id) {
     OUTCOME_TRY(key, idToLookupKey(map, block_id));
-    return map.contains(prependPrefix(key, prefix));
+    if (!key.has_value()) return false;
+    return map.contains(prependPrefix(key.value(), prefix));
   }
 
   outcome::result<std::optional<common::Buffer>> getWithPrefix(
@@ -53,7 +62,8 @@ namespace kagome::blockchain {
       prefix::Prefix prefix,
       const primitives::BlockId &block_id) {
     OUTCOME_TRY(key, idToLookupKey(map, block_id));
-    return map.tryGet(prependPrefix(key, prefix));
+    if (!key.has_value()) return std::nullopt;
+    return map.tryLoad(prependPrefix(key.value(), prefix));
   }
 
   common::Buffer numberToIndexKey(primitives::BlockNumber n) {
@@ -74,7 +84,7 @@ namespace kagome::blockchain {
   }
 
   outcome::result<primitives::BlockNumber> lookupKeyToNumber(
-      const common::Buffer &key) {
+      const common::BufferView &key) {
     if (key.size() < 4) {
       return outcome::failure(KeyValueRepositoryError::INVALID_KEY);
     }
@@ -82,7 +92,7 @@ namespace kagome::blockchain {
            | (uint64_t(key[2]) << 8u) | uint64_t(key[3]);
   }
 
-  common::Buffer prependPrefix(const common::Buffer &key,
+  common::Buffer prependPrefix(common::BufferView key,
                                prefix::Prefix key_column) {
     return common::Buffer{}
         .reserve(key.size() + 1)

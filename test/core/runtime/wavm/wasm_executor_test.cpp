@@ -20,11 +20,13 @@
 #include "mock/core/application/app_configuration_mock.hpp"
 #include "mock/core/blockchain/block_header_repository_mock.hpp"
 #include "mock/core/offchain/offchain_persistent_storage_mock.hpp"
+#include "mock/core/offchain/offchain_worker_pool_mock.hpp"
 #include "mock/core/runtime/runtime_upgrade_tracker_mock.hpp"
 #include "mock/core/storage/changes_trie/changes_tracker_mock.hpp"
 #include "runtime/common/module_repository_impl.hpp"
 #include "runtime/common/trie_storage_provider_impl.hpp"
 #include "runtime/executor.hpp"
+#include "runtime/module.hpp"
 #include "runtime/wavm/compartment_wrapper.hpp"
 #include "runtime/wavm/core_api_factory_impl.hpp"
 #include "runtime/wavm/instance_environment_factory.hpp"
@@ -131,6 +133,8 @@ class WasmExecutorTest : public ::testing::Test {
         std::make_shared<kagome::storage::changes_trie::ChangesTrackerMock>();
     auto offchain_persistent_storage =
         std::make_shared<kagome::offchain::OffchainPersistentStorageMock>();
+    auto offchain_worker_pool =
+        std::make_shared<kagome::offchain::OffchainWorkerPoolMock>();
     auto host_api_factory =
         std::make_shared<kagome::host_api::HostApiFactoryImpl>(
             kagome::host_api::OffchainExtensionConfig{},
@@ -142,7 +146,8 @@ class WasmExecutorTest : public ::testing::Test {
             hasher,
             crypto_store,
             bip39_provider,
-            offchain_persistent_storage);
+            offchain_persistent_storage,
+            offchain_worker_pool);
 
     header_repo_ =
         std::make_shared<kagome::blockchain::BlockHeaderRepositoryMock>();
@@ -159,6 +164,7 @@ class WasmExecutorTest : public ::testing::Test {
             intrinsic_module->instantiate());
     runtime_upgrade_tracker_ =
         std::make_shared<kagome::runtime::RuntimeUpgradeTrackerMock>();
+    auto bogus_smc = std::make_shared<kagome::runtime::SingleModuleCache>();
     auto instance_env_factory =
         std::make_shared<kagome::runtime::wavm::InstanceEnvironmentFactory>(
             trie_db,
@@ -167,13 +173,14 @@ class WasmExecutorTest : public ::testing::Test {
             intrinsic_module,
             host_api_factory,
             header_repo_,
-            changes_tracker);
+            changes_tracker,
+            bogus_smc);
 
     auto module_factory =
         std::make_shared<kagome::runtime::wavm::ModuleFactoryImpl>(
             compartment_wrapper, instance_env_factory, intrinsic_module);
     auto module_repo = std::make_shared<kagome::runtime::ModuleRepositoryImpl>(
-        runtime_upgrade_tracker_, module_factory);
+        runtime_upgrade_tracker_, module_factory, bogus_smc);
 
     auto core_provider =
         std::make_shared<kagome::runtime::wavm::CoreApiFactoryImpl>(
@@ -182,7 +189,8 @@ class WasmExecutorTest : public ::testing::Test {
             trie_db,
             header_repo_,
             instance_env_factory,
-            changes_tracker);
+            changes_tracker,
+            std::make_shared<kagome::runtime::SingleModuleCache>());
     auto host_api =
         std::shared_ptr<kagome::host_api::HostApi>{host_api_factory->make(
             core_provider, memory_provider, storage_provider_)};

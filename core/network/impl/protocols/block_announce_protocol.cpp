@@ -21,23 +21,17 @@ namespace kagome::network {
       const application::ChainSpec &chain_spec,
       std::shared_ptr<StreamEngine> stream_engine,
       std::shared_ptr<blockchain::BlockTree> block_tree,
-      std::shared_ptr<blockchain::BlockStorage> storage,
       std::shared_ptr<BlockAnnounceObserver> observer,
-      std::shared_ptr<crypto::Hasher> hasher,
       std::shared_ptr<PeerManager> peer_manager)
       : host_(host),
         app_config_(app_config),
         stream_engine_(std::move(stream_engine)),
         block_tree_(std::move(block_tree)),
-        storage_(std::move(storage)),
         observer_(std::move(observer)),
-        hasher_(std::move(hasher)),
         peer_manager_(std::move(peer_manager)) {
     BOOST_ASSERT(stream_engine_ != nullptr);
     BOOST_ASSERT(block_tree_ != nullptr);
-    BOOST_ASSERT(storage_ != nullptr);
     BOOST_ASSERT(observer_ != nullptr);
-    BOOST_ASSERT(hasher_ != nullptr);
     BOOST_ASSERT(peer_manager_ != nullptr);
     const_cast<Protocol &>(protocol_) =
         fmt::format(kBlockAnnouncesProtocol.data(), chain_spec.protocolId());
@@ -83,16 +77,7 @@ namespace kagome::network {
       return ProtocolError::CAN_NOT_CREATE_STATUS;
     }
 
-    /// Genesis hash
-    BlockHash genesis_hash;
-    if (auto genesis_res = storage_->getGenesisBlockHash();
-        genesis_res.has_value()) {
-      genesis_hash = std::move(genesis_res.value());
-    } else {
-      log_->error("Could not get genesis block hash: {}",
-                  genesis_res.error().message());
-      return ProtocolError::CAN_NOT_CREATE_STATUS;
-    }
+    auto &genesis_hash = block_tree_->getGenesisBlockHash();
 
     return Status{
         .roles = roles, .best_block = best_block, .genesis_hash = genesis_hash};
@@ -246,19 +231,11 @@ namespace kagome::network {
                    "Handshake has received from {}",
                    stream->remotePeerId().value());
 
-          if (auto genesis_res = self->storage_->getGenesisBlockHash();
-              genesis_res.has_value()) {
-            if (remote_status.genesis_hash != genesis_res.value()) {
-              SL_VERBOSE(self->log_,
-                         "Error while processing status: genesis no match");
-              stream->reset();
-              cb(ProtocolError::GENESIS_NO_MATCH);
-              return;
-            }
-          } else {
+          auto &genesis_hash = self->block_tree_->getGenesisBlockHash();
+
+          if (remote_status.genesis_hash != genesis_hash) {
             SL_VERBOSE(self->log_,
-                       "Error while processing status: {}",
-                       genesis_res.error().message());
+                       "Error while processing status: genesis no match");
             stream->reset();
             cb(ProtocolError::GENESIS_NO_MATCH);
             return;
@@ -269,7 +246,7 @@ namespace kagome::network {
                    "Received status from peer_id={} (best block {})",
                    peer_id,
                    remote_status.best_block.number);
-          self->peer_manager_->updatePeerStatus(peer_id, remote_status);
+          self->peer_manager_->updatePeerState(peer_id, remote_status);
 
           switch (direction) {
             case Direction::OUTGOING:
@@ -369,12 +346,10 @@ namespace kagome::network {
 
           self->observer_->onBlockAnnounce(peer_id, block_announce);
 
-          auto hash = self->hasher_->blake2b_256(
-              scale::encode(block_announce.header).value());
-
-          self->peer_manager_->updatePeerStatus(
-              stream->remotePeerId().value(),
-              BlockInfo(block_announce.header.number, hash));
+          BOOST_ASSERT_MSG(stream->remotePeerId().has_value(),
+                           "peer_id must be known at this moment");
+          self->peer_manager_->updatePeerState(stream->remotePeerId().value(),
+                                               block_announce);
 
           self->readAnnounce(std::move(stream));
         });

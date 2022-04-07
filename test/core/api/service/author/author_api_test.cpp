@@ -188,7 +188,9 @@ TEST_F(AuthorApiTest, SubmitExtrinsicSuccess) {
   EXPECT_CALL(*transaction_pool, submitOne(tr))
       .WillOnce(Return(outcome::success()));
   EXPECT_CALL(*transactions_transmitter, propagateTransactions(_)).Times(1);
-  EXPECT_OUTCOME_SUCCESS(hash, author_api->submitExtrinsic(*extrinsic));
+  EXPECT_OUTCOME_SUCCESS(
+      hash,
+      author_api->submitExtrinsic(TransactionSource::External, *extrinsic));
   ASSERT_EQ(hash.value(), Hash256{});
 }
 
@@ -208,7 +210,9 @@ TEST_F(AuthorApiTest, SubmitExtrinsicFail) {
   EXPECT_CALL(*transaction_pool, submitOne(_)).Times(0);
   EXPECT_CALL(*transactions_transmitter, propagateTransactions(_)).Times(0);
   EXPECT_OUTCOME_ERROR(
-      res, author_api->submitExtrinsic(*extrinsic), DummyError::ERROR);
+      res,
+      author_api->submitExtrinsic(TransactionSource::External, *extrinsic),
+      DummyError::ERROR);
 }
 
 MATCHER_P(eventsAreEqual, n, "") {
@@ -512,4 +516,33 @@ TEST_F(AuthorApiTest, SubmitAndWatchExtrinsicSubmitsAndWatches) {
   ASSERT_OUTCOME_SUCCESS(ret_sub_id,
                          author_api->submitAndWatchExtrinsic(*extrinsic));
   ASSERT_EQ(sub_id, ret_sub_id);
+}
+
+/**
+ * @when requesting list of extrinsics
+ * @then extrinsics are fetched from transaction pool and returned as a vector
+ */
+TEST_F(AuthorApiTest, PendingExtrinsics) {
+  std::unordered_map<Transaction::Hash, std::shared_ptr<Transaction>> trxs;
+  std::vector<Extrinsic> expected_result;
+
+  EXPECT_CALL(*transaction_pool, getPendingTransactions())
+      .WillOnce(ReturnRef(trxs));
+
+  ASSERT_OUTCOME_SUCCESS(actual_result, author_api->pendingExtrinsics());
+  ASSERT_EQ(expected_result, actual_result);
+}
+
+/**
+ * @given subscription id
+ * @when requesting to unwatch extrinsic
+ * @then request is forwarded to api service, result returned
+ */
+TEST_F(AuthorApiTest, UnwatchExtrinsic) {
+  kagome::primitives::SubscriptionId sub_id = 0;
+
+  EXPECT_CALL(*api_service_mock, unsubscribeFromExtrinsicLifecycle(sub_id))
+      .WillOnce(Return(true));
+
+  ASSERT_TRUE(author_api->unwatchExtrinsic(sub_id));
 }

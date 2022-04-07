@@ -9,8 +9,8 @@
 #include "consensus/authority/authority_manager.hpp"
 #include "consensus/authority/authority_update_observer.hpp"
 
+#include "crypto/hasher.hpp"
 #include "log/logger.hpp"
-#include "storage/buffer_map_types.hpp"
 
 namespace kagome::application {
   class AppStateManager;
@@ -25,29 +25,38 @@ namespace kagome::primitives {
   struct AuthorityList;
   struct BabeConfiguration;
 }  // namespace kagome::primitives
+namespace kagome::runtime {
+  class GrandpaApi;
+}
+namespace kagome::storage::trie {
+  class TrieStorage;
+}
 
 namespace kagome::authority {
   class AuthorityManagerImpl : public AuthorityManager,
                                public AuthorityUpdateObserver {
    public:
     inline static const std::vector<primitives::ConsensusEngineId>
-        known_engines{primitives::kBabeEngineId, primitives::kGrandpaEngineId};
+        kKnownEngines{primitives::kBabeEngineId, primitives::kGrandpaEngineId};
+
+    struct Config {
+      // Whether OnDisabled digest message should be processed. It is disabled
+      // in Polkadot but enabled in Kusama
+      bool on_disable_enabled = false;
+    };
 
     AuthorityManagerImpl(
+        Config config,
         std::shared_ptr<application::AppStateManager> app_state_manager,
         std::shared_ptr<blockchain::BlockTree> block_tree,
-        std::shared_ptr<storage::BufferStorage> storage);
+        std::shared_ptr<storage::trie::TrieStorage> trie_storage,
+        std::shared_ptr<runtime::GrandpaApi> grandpa_api,
+        std::shared_ptr<crypto::Hasher> hash);
 
     ~AuthorityManagerImpl() override = default;
 
-    /** @see AppStateManager::takeControl */
+    // Prepare for work
     bool prepare();
-
-    /** @see AppStateManager::takeControl */
-    bool start();
-
-    /** @see AppStateManager::takeControl */
-    void stop();
 
     primitives::BlockInfo base() const override;
 
@@ -76,11 +85,10 @@ namespace kagome::authority {
         primitives::BlockNumber activate_at) override;
 
     outcome::result<void> onConsensus(
-        const primitives::ConsensusEngineId &engine_id,
         const primitives::BlockInfo &block,
         const primitives::Consensus &message) override;
 
-    outcome::result<void> prune(const primitives::BlockInfo &block) override;
+    void prune(const primitives::BlockInfo &block) override;
 
    private:
     /**
@@ -100,13 +108,17 @@ namespace kagome::authority {
     bool directChainExists(const primitives::BlockInfo &ancestor,
                            const primitives::BlockInfo &descendant);
 
-    outcome::result<void> save();
+    void reorganize(std::shared_ptr<ScheduleNode> node,
+                    std::shared_ptr<ScheduleNode> new_node);
 
-    log::Logger log_;
-    std::shared_ptr<application::AppStateManager> app_state_manager_;
+    Config config_;
     std::shared_ptr<blockchain::BlockTree> block_tree_;
-    std::shared_ptr<storage::BufferStorage> storage_;
+    std::shared_ptr<storage::trie::TrieStorage> trie_storage_;
+    std::shared_ptr<runtime::GrandpaApi> grandpa_api_;
+    std::shared_ptr<crypto::Hasher> hasher_;
+
     std::shared_ptr<ScheduleNode> root_;
+    log::Logger log_;
   };
 }  // namespace kagome::authority
 

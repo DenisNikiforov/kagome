@@ -21,29 +21,23 @@ namespace kagome::consensus::grandpa {
                 (override));
 
     MOCK_METHOD(outcome::result<void>,
-                onProposed,
+                onVoted,
                 (RoundNumber round,
                  MembershipCounter set_id,
                  const SignedMessage &propose),
                 (override));
 
-    MOCK_METHOD(outcome::result<void>,
-                onPrevoted,
-                (RoundNumber round,
-                 MembershipCounter set_id,
-                 const SignedMessage &prevote),
-                (override));
-
-    MOCK_METHOD(outcome::result<void>,
-                onPrecommitted,
-                (RoundNumber round,
-                 MembershipCounter set_id,
-                 const SignedMessage &precommit),
+    MOCK_METHOD(void,
+                sendState,
+                (const libp2p::peer::PeerId &peer_id,
+                 const MovableRoundState &state,
+                 MembershipCounter set_id),
                 (override));
 
     MOCK_METHOD(outcome::result<void>,
                 onCommitted,
                 (RoundNumber round,
+                 MembershipCounter set_id,
                  const BlockInfo &vote,
                  const GrandpaJustification &justification),
                 (override));
@@ -53,13 +47,6 @@ namespace kagome::consensus::grandpa {
                 (RoundNumber round,
                  MembershipCounter set_id,
                  BlockNumber last_finalized),
-                (override));
-
-    MOCK_METHOD(void, doOnCompleted, (const CompleteHandler &), (override));
-
-    MOCK_METHOD(void,
-                onCompleted,
-                (outcome::result<MovableRoundState> state),
                 (override));
 
     MOCK_METHOD(outcome::result<void>,
@@ -87,7 +74,7 @@ namespace kagome::consensus::grandpa {
                 (override));
 
     MOCK_METHOD(outcome::result<void>,
-                onCatchUpResponsed,
+                onCatchUpRespond,
                 (const libp2p::peer::PeerId &peer_id,
                  MembershipCounter set_id,
                  RoundNumber round_number,

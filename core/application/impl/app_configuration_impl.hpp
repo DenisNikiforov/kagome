@@ -98,6 +98,15 @@ namespace kagome::application {
     uint16_t p2pPort() const override {
       return p2p_port_;
     }
+    uint32_t outPeers() const override {
+      return out_peers_;
+    }
+    uint32_t inPeers() const override {
+      return in_peers_;
+    }
+    uint32_t inPeersLght() const override {
+      return in_peers_light_;
+    }
     const boost::asio::ip::tcp::endpoint &rpcHttpEndpoint() const override {
       return rpc_http_endpoint_;
     }
@@ -137,6 +146,9 @@ namespace kagome::application {
     }
     bool isOffchainIndexingEnabled() const override {
       return enable_offchain_indexing_;
+    }
+    virtual std::optional<primitives::BlockId> recoverState() const override {
+      return recovery_state_;
     }
 
    private:
@@ -236,6 +248,9 @@ namespace kagome::application {
     uint16_t rpc_http_port_;
     uint16_t rpc_ws_port_;
     uint16_t openmetrics_http_port_;
+    uint32_t out_peers_;
+    uint32_t in_peers_;
+    uint32_t in_peers_light_;
     network::PeeringConfig peering_config_;
     bool dev_mode_;
     std::string node_name_;
@@ -244,6 +259,7 @@ namespace kagome::application {
     RuntimeExecutionMethod runtime_exec_method_;
     OffchainWorkerMode offchain_worker_mode_;
     bool enable_offchain_indexing_;
+    std::optional<primitives::BlockId> recovery_state_;
   };
 
 }  // namespace kagome::application

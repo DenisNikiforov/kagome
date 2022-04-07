@@ -13,7 +13,6 @@ namespace kagome::network {
       const application::ChainSpec &chain_spec,
       const OwnPeerInfo &own_info,
       std::shared_ptr<boost::asio::io_context> io_context,
-      std::shared_ptr<blockchain::BlockStorage> storage,
       std::shared_ptr<crypto::Hasher> hasher,
       std::shared_ptr<StreamEngine> stream_engine,
       std::shared_ptr<primitives::events::ExtrinsicSubscriptionEngine>
@@ -25,13 +24,11 @@ namespace kagome::network {
         chain_spec_(chain_spec),
         own_info_(own_info),
         io_context_(std::move(io_context)),
-        storage_(std::move(storage)),
         hasher_(std::move(hasher)),
         stream_engine_(std::move(stream_engine)),
         extrinsic_events_engine_{std::move(extrinsic_events_engine)},
         ext_event_key_repo_{std::move(ext_event_key_repo)} {
     BOOST_ASSERT(io_context_ != nullptr);
-    BOOST_ASSERT(storage_ != nullptr);
     BOOST_ASSERT(hasher_ != nullptr);
     BOOST_ASSERT(stream_engine_ != nullptr);
     BOOST_ASSERT(extrinsic_events_engine_ != nullptr);
@@ -45,9 +42,7 @@ namespace kagome::network {
                                                    chain_spec_,
                                                    stream_engine_,
                                                    block_tree_.lock(),
-                                                   storage_,
                                                    babe_.lock(),
-                                                   hasher_,
                                                    peer_manager_.lock());
   }
 
@@ -58,7 +53,8 @@ namespace kagome::network {
                                              app_config_,
                                              grandpa_observer_.lock(),
                                              own_info_,
-                                             stream_engine_);
+                                             stream_engine_,
+                                             peer_manager_.lock());
   }
 
   std::shared_ptr<PropagateTransactionsProtocol>

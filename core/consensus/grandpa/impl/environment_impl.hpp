@@ -8,8 +8,7 @@
 
 #include "consensus/grandpa/environment.hpp"
 
-#include <boost/signals2/signal.hpp>
-
+#include "consensus/authority/authority_manager.hpp"
 #include "log/logger.hpp"
 
 namespace kagome::network {
@@ -19,14 +18,11 @@ namespace kagome::network {
 namespace kagome::consensus::grandpa {
 
   class EnvironmentImpl : public Environment {
-    using OnCompleted =
-        boost::signals2::signal<void(outcome::result<MovableRoundState>)>;
-    using OnCompletedSlotType = OnCompleted::slot_type;
-
    public:
     EnvironmentImpl(
         std::shared_ptr<blockchain::BlockTree> block_tree,
         std::shared_ptr<blockchain::BlockHeaderRepository> header_repository,
+        std::shared_ptr<authority::AuthorityManager> authority_manager,
         std::shared_ptr<network::GrandpaTransmitter> transmitter);
 
     ~EnvironmentImpl() override = default;
@@ -52,7 +48,8 @@ namespace kagome::consensus::grandpa {
                      const primitives::BlockHash &block) const override;
 
     outcome::result<BlockInfo> bestChainContaining(
-        const primitives::BlockHash &base) const override;
+        const primitives::BlockHash &base,
+        std::optional<MembershipCounter> voter_set_id) const override;
 
     // Environment methods
 
@@ -61,7 +58,7 @@ namespace kagome::consensus::grandpa {
         MembershipCounter set_id,
         RoundNumber round_number) override;
 
-    outcome::result<void> onCatchUpResponsed(
+    outcome::result<void> onCatchUpRespond(
         const libp2p::peer::PeerId &peer_id,
         MembershipCounter set_id,
         RoundNumber round_number,
@@ -69,21 +66,17 @@ namespace kagome::consensus::grandpa {
         std::vector<SignedPrecommit> precommit_justification,
         BlockInfo best_final_candidate) override;
 
-    outcome::result<void> onProposed(RoundNumber round,
-                                     MembershipCounter set_id,
-                                     const SignedMessage &propose) override;
+    void sendState(const libp2p::peer::PeerId &peer_id,
+                   const MovableRoundState &state,
+                   MembershipCounter voter_set_id) override;
 
-    outcome::result<void> onPrevoted(RoundNumber round,
-                                     MembershipCounter set_id,
-                                     const SignedMessage &prevote) override;
-
-    outcome::result<void> onPrecommitted(
-        RoundNumber round,
-        MembershipCounter set_id,
-        const SignedMessage &precommit) override;
+    outcome::result<void> onVoted(RoundNumber round,
+                                  MembershipCounter set_id,
+                                  const SignedMessage &vote) override;
 
     outcome::result<void> onCommitted(
         RoundNumber round,
+        MembershipCounter voter_ser_id,
         const BlockInfo &vote,
         const GrandpaJustification &justification) override;
 
@@ -91,10 +84,6 @@ namespace kagome::consensus::grandpa {
         RoundNumber round,
         MembershipCounter set_id,
         BlockNumber last_finalized) override;
-
-    void doOnCompleted(const CompleteHandler &) override;
-
-    void onCompleted(outcome::result<MovableRoundState> round) override;
 
     outcome::result<void> applyJustification(
         const BlockInfo &block_info,
@@ -112,10 +101,10 @@ namespace kagome::consensus::grandpa {
    private:
     std::shared_ptr<blockchain::BlockTree> block_tree_;
     std::shared_ptr<blockchain::BlockHeaderRepository> header_repository_;
+    std::shared_ptr<authority::AuthorityManager> authority_manager_;
     std::shared_ptr<network::GrandpaTransmitter> transmitter_;
     std::weak_ptr<JustificationObserver> justification_observer_;
 
-    OnCompleted on_completed_;
     log::Logger logger_;
   };
 

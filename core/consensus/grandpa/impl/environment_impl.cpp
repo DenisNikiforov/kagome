@@ -24,13 +24,16 @@ namespace kagome::consensus::grandpa {
   EnvironmentImpl::EnvironmentImpl(
       std::shared_ptr<blockchain::BlockTree> block_tree,
       std::shared_ptr<blockchain::BlockHeaderRepository> header_repository,
+      std::shared_ptr<authority::AuthorityManager> authority_manager,
       std::shared_ptr<network::GrandpaTransmitter> transmitter)
       : block_tree_{std::move(block_tree)},
         header_repository_{std::move(header_repository)},
+        authority_manager_{std::move(authority_manager)},
         transmitter_{std::move(transmitter)},
         logger_{log::createLogger("GrandpaEnvironment", "grandpa")} {
     BOOST_ASSERT(block_tree_ != nullptr);
     BOOST_ASSERT(header_repository_ != nullptr);
+    BOOST_ASSERT(authority_manager_ != nullptr);
     BOOST_ASSERT(transmitter_ != nullptr);
   }
 
@@ -57,29 +60,32 @@ namespace kagome::consensus::grandpa {
   }
 
   outcome::result<BlockInfo> EnvironmentImpl::bestChainContaining(
-      const BlockHash &base) const {
+      const BlockHash &base,
+      std::optional<MembershipCounter> voter_set_id) const {
     SL_DEBUG(logger_, "Finding best chain containing block {}", base);
-    OUTCOME_TRY(best_info, block_tree_->getBestContaining(base, std::nullopt));
-    auto best_hash = best_info.hash;
+    OUTCOME_TRY(best_block, block_tree_->getBestContaining(base, std::nullopt));
 
-    auto target = best_info.number;
+    // Select best block with actual set_id
+    if (voter_set_id.has_value()) {
+      while (true) {
+        OUTCOME_TRY(header,
+                    header_repository_->getBlockHeader(best_block.hash));
+        BlockInfo parent_block{header.number - 1, header.parent_hash};
 
-    OUTCOME_TRY(best_header, header_repository_->getBlockHeader(best_hash));
+        OUTCOME_TRY(voter_set,
+                    authority_manager_->authorities(parent_block, true));
 
-    // walk backwards until we find the target block
-    while (true) {
-      if (best_header.number == target) {
-        SL_DEBUG(logger_,
-                 "found best chain: {}",
-                 BlockInfo(best_header.number, best_hash));
-        return BlockInfo{primitives::BlockNumber{best_header.number},
-                         best_hash};
+        if (voter_set->id == voter_set_id.value()) {
+          // found
+          break;
+        }
+
+        best_block = parent_block;
       }
-      best_hash = best_header.parent_hash;
-      OUTCOME_TRY(new_best_header,
-                  header_repository_->getBlockHeader(best_hash));
-      best_header = new_best_header;
     }
+
+    SL_DEBUG(logger_, "Found best chain: {}", best_block);
+    return best_block;
   }
 
   outcome::result<void> EnvironmentImpl::onCatchUpRequested(
@@ -94,7 +100,7 @@ namespace kagome::consensus::grandpa {
     return outcome::success();
   }
 
-  outcome::result<void> EnvironmentImpl::onCatchUpResponsed(
+  outcome::result<void> EnvironmentImpl::onCatchUpRespond(
       const libp2p::peer::PeerId &peer_id,
       MembershipCounter set_id,
       RoundNumber round_number,
@@ -112,67 +118,72 @@ namespace kagome::consensus::grandpa {
     return outcome::success();
   }
 
-  outcome::result<void> EnvironmentImpl::onProposed(
-      RoundNumber round,
-      MembershipCounter set_id,
-      const SignedMessage &propose) {
-    BOOST_ASSERT(propose.is<PrimaryPropose>());
-
+  outcome::result<void> EnvironmentImpl::onVoted(RoundNumber round,
+                                                 MembershipCounter set_id,
+                                                 const SignedMessage &vote) {
     SL_DEBUG(logger_,
-             "Round #{}: Send proposal for block {}",
+             "Round #{}: Send {} signed by {} for block {}",
              round,
-             propose.getBlockInfo());
+             visit_in_place(
+                 vote.message,
+                 [&](const Prevote &) { return "prevote"; },
+                 [&](const Precommit &) { return "precommit"; },
+                 [&](const PrimaryPropose &) { return "primary propose"; }),
+             vote.id,
+             vote.getBlockInfo());
 
     network::GrandpaVote message{
-        {.round_number = round, .counter = set_id, .vote = propose}};
+        {.round_number = round, .counter = set_id, .vote = vote}};
     transmitter_->sendVoteMessage(std::move(message));
     return outcome::success();
   }
 
-  outcome::result<void> EnvironmentImpl::onPrevoted(
-      RoundNumber round,
-      MembershipCounter set_id,
-      const SignedMessage &prevote) {
-    BOOST_ASSERT(prevote.is<Prevote>());
+  void EnvironmentImpl::sendState(const libp2p::peer::PeerId &peer_id,
+                                  const MovableRoundState &state,
+                                  MembershipCounter voter_set_id) {
+    auto send = [&](const SignedMessage &vote) {
+      SL_DEBUG(logger_,
+               "Round #{}: Send {} signed by {} for block {} (as send state)",
+               state.round_number,
+               visit_in_place(
+                   vote.message,
+                   [&](const Prevote &) { return "prevote"; },
+                   [&](const Precommit &) { return "precommit"; },
+                   [&](const PrimaryPropose &) { return "primary propose"; }),
+               vote.id,
+               vote.getBlockInfo());
 
-    SL_DEBUG(logger_,
-             "Round #{}: Send prevote for block {}",
-             round,
-             prevote.getBlockInfo());
+      network::GrandpaVote message{{.round_number = state.round_number,
+                                    .counter = voter_set_id,
+                                    .vote = vote}};
+      transmitter_->sendVoteMessage(peer_id, std::move(message));
+    };
 
-    network::GrandpaVote message{
-        {.round_number = round, .counter = set_id, .vote = prevote}};
-    transmitter_->sendVoteMessage(std::move(message));
-
-    return outcome::success();
-  }
-
-  outcome::result<void> EnvironmentImpl::onPrecommitted(
-      RoundNumber round,
-      MembershipCounter set_id,
-      const SignedMessage &precommit) {
-    BOOST_ASSERT(precommit.is<Precommit>());
-
-    SL_DEBUG(logger_,
-             "Round #{}: Send precommit for block {}",
-             round,
-             precommit.getBlockInfo());
-
-    network::GrandpaVote message{
-        {.round_number = round, .counter = set_id, .vote = precommit}};
-    transmitter_->sendVoteMessage(std::move(message));
-
-    return outcome::success();
+    for (const auto &vv : state.votes) {
+      visit_in_place(
+          vv,
+          [&](const SignedMessage &vote) { send(vote); },
+          [&](const EquivocatorySignedMessage &pair_vote) {
+            send(pair_vote.first);
+            send(pair_vote.second);
+          });
+    }
   }
 
   outcome::result<void> EnvironmentImpl::onCommitted(
       RoundNumber round,
+      MembershipCounter voter_ser_id,
       const BlockInfo &vote,
       const GrandpaJustification &justification) {
+    if (round == 0) {
+      return outcome::success();
+    }
+
     SL_DEBUG(logger_, "Round #{}: Send commit of block {}", round, vote);
 
     network::FullCommitMessage message{
         .round = round,
+        .set_id = voter_ser_id,
         .message = {.target_hash = vote.hash, .target_number = vote.number}};
     for (const auto &item : justification.items) {
       BOOST_ASSERT(item.is<Precommit>());
@@ -195,20 +206,6 @@ namespace kagome::consensus::grandpa {
     transmitter_->sendNeighborMessage(std::move(message));
 
     return outcome::success();
-  }
-
-  void EnvironmentImpl::doOnCompleted(
-      const CompleteHandler &on_completed_slot) {
-    on_completed_.disconnect_all_slots();
-    on_completed_.connect(on_completed_slot);
-  }
-
-  void EnvironmentImpl::onCompleted(
-      outcome::result<MovableRoundState> round_state) {
-    BOOST_ASSERT_MSG(
-        not on_completed_.empty(),
-        "Completed signal in environment cannot be empty when it is invoked");
-    on_completed_(round_state);
   }
 
   outcome::result<void> EnvironmentImpl::applyJustification(

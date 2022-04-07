@@ -8,6 +8,7 @@
 #include <chrono>
 
 #include "blockchain/block_tree_error.hpp"
+#include "blockchain/impl/common.hpp"
 #include "consensus/babe/impl/babe_digests_util.hpp"
 #include "consensus/babe/impl/threshold_util.hpp"
 #include "consensus/babe/types/slot.hpp"
@@ -89,9 +90,13 @@ namespace kagome::consensus {
     }
     auto &header = b.header.value();
 
-    if (not block_tree_->getBlockBody(header.parent_hash)) {
+    if (auto body_res = block_tree_->getBlockBody(header.parent_hash);
+        body_res.has_error()
+        && body_res.error() == blockchain::BlockTreeError::BODY_NOT_FOUND) {
       logger_->warn("Skipping a block with unknown parent");
       return Error::PARENT_NOT_FOUND;
+    } else if (body_res.has_error()) {
+      return body_res.as_failure();
     }
 
     // get current time to measure performance if block execution
@@ -99,15 +104,19 @@ namespace kagome::consensus {
 
     auto block_hash = hasher_->blake2b_256(scale::encode(header).value());
 
+    bool block_already_exists = false;
+
     // check if block body already exists. If so, do not apply
-    if (block_tree_->getBlockBody(block_hash)) {
+    if (auto body_res = block_tree_->getBlockBody(block_hash);
+        body_res.has_value()) {
       SL_DEBUG(logger_,
                "Skip existing block: {}",
                primitives::BlockInfo(header.number, block_hash));
 
       OUTCOME_TRY(block_tree_->addExistingBlock(block_hash, header));
-
-      return blockchain::BlockTreeError::BLOCK_EXISTS;
+      block_already_exists = true;
+    } else if (body_res.error() != blockchain::BlockTreeError::BODY_NOT_FOUND) {
+      return body_res.as_failure();
     }
 
     if (not b.body.has_value()) {
@@ -124,49 +133,34 @@ namespace kagome::consensus {
     const auto &babe_header = babe_digests.second;
 
     tracer_->debug( "Applying block {}", block.header.number);
+    auto slot_number = babe_header.slot_number;
+    auto epoch_number = babe_util_->slotToEpoch(slot_number);
+
     logger_->info(
-        "Applying block {} ({} in slot {})",  //
+        "Applying block {} ({} in slot {}, epoch {})",  //
         primitives::BlockInfo(block.header.number, block_hash),
         babe_header.slotType() == SlotType::Primary          ? "primary"
         : babe_header.slotType() == SlotType::SecondaryVRF   ? "secondary-vrf"
         : babe_header.slotType() == SlotType::SecondaryPlain ? "secondary-plain"
                                                              : "unknown",
-        babe_header.slot_number);
-
-    // add information about epoch to epoch storage
-    if (block.header.number == 1) {
-      OUTCOME_TRY(babe_util_->setLastEpoch(EpochDescriptor{
-          .epoch_number = 0, .start_slot = babe_header.slot_number}));
-    }
-
-    EpochNumber epoch_number = babe_util_->slotToEpoch(babe_header.slot_number);
-
-    OUTCOME_TRY(this_block_epoch_descriptor,
-                block_tree_->getEpochDescriptor(epoch_number,
-                                                block.header.parent_hash));
-
-    [[maybe_unused]] auto &slot_number = babe_header.slot_number;
-    SL_TRACE(
-        logger_,
-        "EPOCH_DIGEST: Actual epoch digest for epoch {} in slot {} (to apply "
-        "block #{}). Randomness: {}",
-        epoch_number,
         slot_number,
-        block.header.number,
-        this_block_epoch_descriptor.randomness.toHex());
+        epoch_number);
+
+    OUTCOME_TRY(
+        this_block_epoch_descriptor,
+        block_tree_->getEpochDigest(epoch_number, block.header.parent_hash));
+
+    SL_TRACE(logger_,
+             "Actual epoch digest to apply block {} (slot {}, epoch {}). "
+             "Randomness: {}",
+             primitives::BlockInfo(block.header.number, block_hash),
+             slot_number,
+             epoch_number,
+             this_block_epoch_descriptor.randomness);
 
     auto threshold = calculateThreshold(babe_configuration_->leadership_rate,
                                         this_block_epoch_descriptor.authorities,
                                         babe_header.authority_index);
-
-    if (auto next_epoch_digest_res = getNextEpochDigest(block.header)) {
-      auto &next_epoch_digest = next_epoch_digest_res.value();
-      SL_VERBOSE(logger_,
-                 "Got next epoch digest in slot {} (block #{}). Randomness: {}",
-                 slot_number,
-                 block.header.number,
-                 next_epoch_digest.randomness.toHex());
-    }
 
     OUTCOME_TRY(block_validator_->validateHeader(
         block.header,
@@ -175,6 +169,16 @@ namespace kagome::consensus {
         threshold,
         this_block_epoch_descriptor.randomness));
 
+    if (auto next_epoch_digest_res = getNextEpochDigest(block.header)) {
+      auto &next_epoch_digest = next_epoch_digest_res.value();
+      SL_VERBOSE(logger_,
+                 "Next epoch digest has gotten in block {} (slot {}). "
+                 "Randomness: {}",
+                 slot_number,
+                 primitives::BlockInfo(block.header.number, block_hash),
+                 next_epoch_digest.randomness);
+    }
+
     auto block_without_seal_digest = block;
 
     // block should be applied without last digest which contains the seal
@@ -182,54 +186,57 @@ namespace kagome::consensus {
 
     auto parent = block_tree_->getBlockHeader(block.header.parent_hash).value();
 
-    auto exec_start = std::chrono::high_resolution_clock::now();
-    // apply block
-    SL_DEBUG(logger_,
-             "Execute block {}, state {}, a child of block {}, state {}",
-             primitives::BlockInfo(block.header.number, block_hash),
-             block.header.state_root,
-             primitives::BlockInfo(parent.number, block.header.parent_hash),
-             parent.state_root);
-
     auto last_finalized_block = block_tree_->getLastFinalized();
     auto previous_best_block_res =
         block_tree_->getBestContaining(last_finalized_block.hash, std::nullopt);
     BOOST_ASSERT(previous_best_block_res.has_value());
     const auto &previous_best_block = previous_best_block_res.value();
 
-    OUTCOME_TRY(core_->execute_block(block_without_seal_digest));
+    if (not block_already_exists) {
+      auto exec_start = std::chrono::high_resolution_clock::now();
+      // apply block
+      SL_DEBUG(logger_,
+               "Execute block {}, state {}, a child of block {}, state {}",
+               primitives::BlockInfo(block.header.number, block_hash),
+               block.header.state_root,
+               primitives::BlockInfo(parent.number, block.header.parent_hash),
+               parent.state_root);
 
-    auto exec_end = std::chrono::high_resolution_clock::now();
-    auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           exec_end - exec_start)
-                           .count();
-    SL_DEBUG(logger_, "Core_execute_block: {} ms", duration_ms);
+      OUTCOME_TRY(core_->execute_block(block_without_seal_digest));
 
-    metric_block_execution_time_->observe(static_cast<double>(duration_ms)
-                                          / 1000);
+      auto exec_end = std::chrono::high_resolution_clock::now();
+      auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             exec_end - exec_start)
+                             .count();
+      SL_DEBUG(logger_, "Core_execute_block: {} ms", duration_ms);
 
-    // add block header if it does not exist
-    OUTCOME_TRY(block_tree_->addBlock(block));
+      metric_block_execution_time_->observe(static_cast<double>(duration_ms)
+                                            / 1000);
+
+      // add block header if it does not exist
+      OUTCOME_TRY(block_tree_->addBlock(block));
+    }
 
     // observe possible changes of authorities
+    // (must be done strictly after block will be added)
     for (auto &digest_item : block_without_seal_digest.header.digest) {
       auto res = visit_in_place(
           digest_item,
           [&](const primitives::Consensus &consensus_message)
               -> outcome::result<void> {
             return authority_update_observer_->onConsensus(
-                consensus_message.consensus_engine_id,
                 primitives::BlockInfo{block.header.number, block_hash},
                 consensus_message);
           },
           [](const auto &) { return outcome::success(); });
       if (res.has_error()) {
-        // TODO(xDimon): Rolling back of block is needed here
+        rollbackBlock(block_hash);
         return res.as_failure();
       }
     }
 
-    // apply justification if any
+    // apply justification if any (must be done strictly after block will be
+    // added and his consensus-digests will be handled)
     if (b.justification.has_value()) {
       SL_VERBOSE(logger_,
                  "Justification received for block {}",
@@ -238,7 +245,7 @@ namespace kagome::consensus {
           primitives::BlockInfo(block.header.number, block_hash),
           b.justification.value());
       if (res.has_error()) {
-        // TODO(xDimon): Rolling back of block is needed here
+        rollbackBlock(block_hash);
         return res.as_failure();
       }
     }
@@ -280,6 +287,17 @@ namespace kagome::consensus {
     }
 
     return outcome::success();
+  }
+
+  void BlockExecutorImpl::rollbackBlock(
+      const primitives::BlockHash &block_hash) {
+    auto removal_res = block_tree_->removeLeaf(block_hash);
+    if (removal_res.has_error()) {
+      SL_WARN(logger_,
+              "Rolling back of block {} is failed: {}",
+              block_hash,
+              removal_res.error().message());
+    }
   }
 
 }  // namespace kagome::consensus

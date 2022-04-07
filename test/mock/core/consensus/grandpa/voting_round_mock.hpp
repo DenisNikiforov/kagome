@@ -20,17 +20,13 @@ namespace kagome::consensus::grandpa {
 
     MOCK_METHOD(bool, completable, (), (const, override));
 
-    MOCK_METHOD(bool, finalizable, (), (const, override));
-
     MOCK_METHOD(BlockInfo, lastFinalizedBlock, (), (const, override));
 
     MOCK_METHOD(BlockInfo, bestPrevoteCandidate, (), (override));
 
-    MOCK_METHOD(BlockInfo, bestPrecommitCandidate, (), (override));
-
     MOCK_METHOD(BlockInfo, bestFinalCandidate, (), (override));
 
-    MOCK_METHOD(std::optional<BlockInfo>,
+    MOCK_METHOD(const std::optional<BlockInfo> &,
                 finalizedBlock,
                 (),
                 (const, override));
@@ -50,8 +46,6 @@ namespace kagome::consensus::grandpa {
     MOCK_METHOD(void, doFinalize, (), (override));
 
     MOCK_METHOD(void, doCommit, (), (override));
-
-    MOCK_METHOD(void, doCatchUpRequest, (const libp2p::peer::PeerId &), ());
 
     MOCK_METHOD(void,
                 doCatchUpResponse,
@@ -73,7 +67,19 @@ namespace kagome::consensus::grandpa {
                 (const SignedMessage &, Propagation),
                 (override));
 
-    MOCK_METHOD(void, update, (bool, bool), (override));
+    MOCK_METHOD(void,
+                update,
+                (IsPreviousRoundChanged,
+                 IsPrevotesChanged,
+                 IsPrecommitsChanged),
+                (override));
+
+    MOCK_METHOD(std::shared_ptr<VotingRound>,
+                getPreviousRound,
+                (),
+                (const, override));
+
+    MOCK_METHOD(void, forgetPreviousRound, (), (override));
 
     MOCK_METHOD(outcome::result<void>,
                 applyJustification,
