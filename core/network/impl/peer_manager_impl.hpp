@@ -164,6 +164,7 @@ namespace kagome::network {
     std::map<PeerId, PeerDescriptor> active_peers_;
     std::unordered_map<PeerId, PeerState> peer_states_;
     libp2p::basic::Scheduler::Handle align_timer_;
+    libp2p::basic::Scheduler::Handle store_peers_timer_;
     std::set<PeerId> recently_active_peers_;
 
     // metrics

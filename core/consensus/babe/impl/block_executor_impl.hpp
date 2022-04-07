@@ -71,6 +71,7 @@ namespace kagome::consensus {
     metrics::Histogram *metric_block_execution_time_;
 
     log::Logger logger_;
+    log::Logger tracer_;
   };
 
 }  // namespace kagome::consensus

@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include <boost/container/flat_map.hpp>
 #include "common/buffer.hpp"
 #include "log/logger.hpp"
 #include "runtime/types.hpp"
@@ -89,10 +90,16 @@ namespace kagome::host_api {
     void ext_default_child_storage_storage_kill_version_1(
         runtime::WasmSpan child_storage_key);
 
+//    void kill();
+//
+    void print_stats() const;
+
    private:
     std::shared_ptr<runtime::TrieStorageProvider> storage_provider_;
     std::shared_ptr<const runtime::MemoryProvider> memory_provider_;
     log::Logger logger_;
+    log::Logger tracer_;
+    mutable boost::container::flat_map<std::string, int> call_stats_;
 
     constexpr static auto kDefaultLoggerTag =
         "WASM Runtime [ChildStorageExtension]";

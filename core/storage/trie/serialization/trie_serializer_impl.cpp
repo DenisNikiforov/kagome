@@ -30,7 +30,7 @@ namespace kagome::storage::trie {
   }
 
   outcome::result<RootHash> TrieSerializerImpl::storeTrie(PolkadotTrie &trie) {
-    if (trie.getRoot() == nullptr) {
+    if (trie.getRoot().get() == nullptr) {
       return getEmptyRootHash();
     }
     return storeRootNode(*trie.getRoot());

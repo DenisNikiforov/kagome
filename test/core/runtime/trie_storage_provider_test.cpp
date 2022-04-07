@@ -8,6 +8,7 @@
 #include "runtime/common/trie_storage_provider_impl.hpp"
 
 #include "common/buffer.hpp"
+#include "common/hexutil.hpp"
 #include "runtime/common/runtime_transaction_error.hpp"
 #include "storage/in_memory/in_memory_storage.hpp"
 #include "storage/trie/impl/trie_storage_backend_impl.hpp"
@@ -40,9 +41,8 @@ class TrieStorageProviderTest : public ::testing::Test {
         std::make_shared<kagome::storage::trie::TrieStorageBackendImpl>(
             storage_, kagome::common::Buffer{});
 
-    auto serializer =
-        std::make_shared<kagome::storage::trie::TrieSerializerImpl>(
-            trie_factory, codec, backend);
+    serializer = std::make_shared<kagome::storage::trie::TrieSerializerImpl>(
+        trie_factory, codec, backend);
 
     auto trieDb = kagome::storage::trie::TrieStorageImpl::createEmpty(
                       trie_factory, codec, serializer, std::nullopt)
@@ -57,9 +57,16 @@ class TrieStorageProviderTest : public ::testing::Test {
   }
 
  protected:
+  std::shared_ptr<kagome::storage::trie::TrieSerializerImpl> serializer;
   std::shared_ptr<kagome::storage::BufferStorage> storage_;
   std::shared_ptr<kagome::runtime::TrieStorageProvider> storage_provider_;
 };
+
+TEST_F(TrieStorageProviderTest, EmptyRoot){
+  auto data = serializer->getEmptyRootHash();
+  auto x = kagome::common::hex_lower_0x(data);
+  std::cout << x << std::endl;
+}
 
 TEST_F(TrieStorageProviderTest, StartTransaction) {
   ASSERT_OUTCOME_SUCCESS_TRY(storage_provider_->startTransaction());

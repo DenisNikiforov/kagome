@@ -16,6 +16,11 @@ sinks:
     thread: name
     color: false
     latency: 0
+  - name: file
+    type: file
+    capacity: 4
+    buffer: 60485760
+    path: /Users/igor/dev/data/tracer.log
 groups:
   - name: main
     sink: console
@@ -68,6 +73,9 @@ groups:
                   - name: offchain_extension
                   - name: misc_extension
               - name: binaryen
+              - name: tracer
+                level: debug
+                sink: file
               - name: wavm
           - name: metrics
           - name: network

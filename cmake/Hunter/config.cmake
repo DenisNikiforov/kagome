@@ -24,9 +24,16 @@ hunter_config(
     KEEP_PACKAGE_SOURCES
 )
 
+#hunter_config(
+#    soralog
+#    VERSION 0.0.9
+#    KEEP_PACKAGE_SOURCES
+#)
+
 hunter_config(
     soralog
-    VERSION 0.0.9
+    URL https://github.com/igor-egorov/soralog/archive/newmaster.tar.gz
+    SHA1 74265ae6d97717fe39394d5228f1ab11485d9aa2
     KEEP_PACKAGE_SOURCES
 )
 
