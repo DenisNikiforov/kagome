@@ -92,6 +92,8 @@ namespace kagome::application {
 
     MOCK_METHOD(const std::string &, nodeVersion, (), (const, override));
 
+    MOCK_METHOD(AppConfiguration::SyncMethod, syncMethod, (), (const, override));
+
     MOCK_METHOD(AppConfiguration::RuntimeExecutionMethod,
                 runtimeExecMethod,
                 (),
