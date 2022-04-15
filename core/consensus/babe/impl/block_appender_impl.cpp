@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "consensus/babe/impl/block_executor_impl.hpp"
+#include "consensus/babe/impl/block_appender_impl.hpp"
 
 #include <chrono>
 
@@ -14,19 +14,16 @@
 #include "consensus/babe/types/slot.hpp"
 #include "network/helpers/peer_id_formatter.hpp"
 #include "primitives/common.hpp"
-#include "runtime/runtime_api/offchain_worker_api.hpp"
 #include "scale/scale.hpp"
 #include "transaction_pool/transaction_pool_error.hpp"
 
-OUTCOME_CPP_DEFINE_CATEGORY(kagome::consensus, BlockExecutorImpl::Error, e) {
-  using E = kagome::consensus::BlockExecutorImpl::Error;
+OUTCOME_CPP_DEFINE_CATEGORY(kagome::consensus, BlockAppenderImpl::Error, e) {
+  using E = kagome::consensus::BlockAppenderImpl::Error;
   switch (e) {
     case E::INVALID_BLOCK:
       return "Invalid block";
     case E::PARENT_NOT_FOUND:
       return "Parent not found";
-    case E::INTERNAL_ERROR:
-      return "Internal error";
   }
   return "Unknown error";
 }
@@ -38,50 +35,34 @@ namespace {
 
 namespace kagome::consensus {
 
-  BlockExecutorImpl::BlockExecutorImpl(
+  BlockAppenderImpl::BlockAppenderImpl(
       std::shared_ptr<blockchain::BlockTree> block_tree,
-      std::shared_ptr<runtime::Core> core,
       std::shared_ptr<primitives::BabeConfiguration> configuration,
       std::shared_ptr<BlockValidator> block_validator,
       std::shared_ptr<grandpa::Environment> grandpa_environment,
-      std::shared_ptr<transaction_pool::TransactionPool> tx_pool,
       std::shared_ptr<crypto::Hasher> hasher,
       std::shared_ptr<authority::AuthorityUpdateObserver>
           authority_update_observer,
-      std::shared_ptr<BabeUtil> babe_util,
-      std::shared_ptr<runtime::OffchainWorkerApi> offchain_worker_api)
+      std::shared_ptr<BabeUtil> babe_util)
       : block_tree_{std::move(block_tree)},
-        core_{std::move(core)},
         babe_configuration_{std::move(configuration)},
         block_validator_{std::move(block_validator)},
         grandpa_environment_{std::move(grandpa_environment)},
-        tx_pool_{std::move(tx_pool)},
         hasher_{std::move(hasher)},
         authority_update_observer_{std::move(authority_update_observer)},
         babe_util_(std::move(babe_util)),
-        offchain_worker_api_(std::move(offchain_worker_api)),
         logger_{log::createLogger("BlockExecutor", "block_executor")} {
     BOOST_ASSERT(block_tree_ != nullptr);
-    BOOST_ASSERT(core_ != nullptr);
     BOOST_ASSERT(babe_configuration_ != nullptr);
     BOOST_ASSERT(block_validator_ != nullptr);
     BOOST_ASSERT(grandpa_environment_ != nullptr);
-    BOOST_ASSERT(tx_pool_ != nullptr);
     BOOST_ASSERT(hasher_ != nullptr);
     BOOST_ASSERT(authority_update_observer_ != nullptr);
     BOOST_ASSERT(babe_util_ != nullptr);
-    BOOST_ASSERT(offchain_worker_api_ != nullptr);
     BOOST_ASSERT(logger_ != nullptr);
-
-    // Register metrics
-    metrics_registry_->registerHistogramFamily(
-        kBlockExecutionTime, "Time taken to verify and import blocks");
-    metric_block_execution_time_ = metrics_registry_->registerHistogramMetric(
-        kBlockExecutionTime,
-        {0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10});
   }
 
-  outcome::result<void> BlockExecutorImpl::applyBlock(
+  outcome::result<void> BlockAppenderImpl::appendBlock(
       primitives::BlockData &&b) {
     if (not b.header.has_value()) {
       logger_->warn("Skipping a block without header");
@@ -89,13 +70,13 @@ namespace kagome::consensus {
     }
     auto &header = b.header.value();
 
-    if (auto body_res = block_tree_->getBlockBody(header.parent_hash);
-        body_res.has_error()
-        && body_res.error() == blockchain::BlockTreeError::BODY_NOT_FOUND) {
+    if (auto header_res = block_tree_->getBlockHeader(header.parent_hash);
+        header_res.has_error()
+        && header_res.error() == blockchain::BlockTreeError::HEADER_NOT_FOUND) {
       logger_->warn("Skipping a block with unknown parent");
       return Error::PARENT_NOT_FOUND;
-    } else if (body_res.has_error()) {
-      return body_res.as_failure();
+    } else if (header_res.has_error()) {
+      return header_res.as_failure();
     }
 
     // get current time to measure performance if block execution
@@ -105,67 +86,26 @@ namespace kagome::consensus {
 
     bool block_already_exists = false;
 
-    // check if block body already exists. If so, do not apply
-    if (auto body_res = block_tree_->getBlockBody(block_hash);
-        body_res.has_value()) {
+    // check if block header already exists. If so, do not append
+    if (auto header_res = block_tree_->getBlockHeader(block_hash);
+        header_res.has_value()) {
       SL_DEBUG(logger_,
                "Skip existing block: {}",
                primitives::BlockInfo(header.number, block_hash));
 
       OUTCOME_TRY(block_tree_->addExistingBlock(block_hash, header));
       block_already_exists = true;
-    } else if (body_res.error() != blockchain::BlockTreeError::BODY_NOT_FOUND) {
-      return body_res.as_failure();
+    } else if (header_res.error() != blockchain::BlockTreeError::HEADER_NOT_FOUND) {
+      return header_res.as_failure();
     }
 
-    if (not b.body.has_value()) {
-      logger_->warn("Skipping a block without body.");
-      return Error::INVALID_BLOCK;
-    }
-    auto &body = b.body.value();
-
-    primitives::Block block{.header = std::move(header),
-                            .body = std::move(body)};
+    primitives::Block block{.header = std::move(header)};
 
     OUTCOME_TRY(babe_digests, getBabeDigests(block.header));
 
     const auto &babe_header = babe_digests.second;
 
     auto slot_number = babe_header.slot_number;
-
-    babe_util_->syncEpoch([&] {
-      auto res = block_tree_->getBlockHeader(primitives::BlockNumber(1));
-      if (res.has_error()) {
-        if (block.header.number == 1) {
-          SL_TRACE(logger_,
-                   "First block slot is {}: it is first block (at executing)",
-                   slot_number);
-          return std::tuple(slot_number, false);
-        } else {
-          SL_TRACE(logger_,
-                   "First block slot is {}: no first block (at executing)",
-                   babe_util_->getCurrentSlot());
-          return std::tuple(babe_util_->getCurrentSlot(), false);
-        }
-      }
-
-      auto &first_block_header = res.value();
-      auto babe_digest_res = consensus::getBabeDigests(first_block_header);
-      BOOST_ASSERT_MSG(babe_digest_res.has_value(),
-                       "Any non genesis block must contain babe digest");
-      auto first_slot_number = babe_digest_res.value().second.slot_number;
-
-      auto is_first_block_finalized =
-          block_tree_->getLastFinalized().number > 0;
-
-      SL_TRACE(
-          logger_,
-          "First block slot is {}: by {}finalized first block (at executing)",
-          first_slot_number,
-          is_first_block_finalized ? "" : "non-");
-      return std::tuple(first_slot_number, is_first_block_finalized);
-    });
-
     auto epoch_number = babe_util_->slotToEpoch(slot_number);
 
     logger_->info(
@@ -225,28 +165,7 @@ namespace kagome::consensus {
     const auto &previous_best_block = previous_best_block_res.value();
 
     if (not block_already_exists) {
-      auto exec_start = std::chrono::high_resolution_clock::now();
-      // apply block
-      SL_DEBUG(logger_,
-               "Execute block {}, state {}, a child of block {}, state {}",
-               primitives::BlockInfo(block.header.number, block_hash),
-               block.header.state_root,
-               primitives::BlockInfo(parent.number, block.header.parent_hash),
-               parent.state_root);
-
-      OUTCOME_TRY(core_->execute_block(block_without_seal_digest));
-
-      auto exec_end = std::chrono::high_resolution_clock::now();
-      auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             exec_end - exec_start)
-                             .count();
-      SL_DEBUG(logger_, "Core_execute_block: {} ms", duration_ms);
-
-      metric_block_execution_time_->observe(static_cast<double>(duration_ms)
-                                            / 1000);
-
-      // add block header if it does not exist
-      OUTCOME_TRY(block_tree_->addBlock(block));
+      OUTCOME_TRY(block_tree_->addBlockHeader(block.header));
     }
 
     // observe possible changes of authorities
@@ -282,17 +201,6 @@ namespace kagome::consensus {
       }
     }
 
-    // remove block's extrinsics from tx pool
-    for (const auto &extrinsic : block.body) {
-      auto res = tx_pool_->removeOne(hasher_->blake2b_256(extrinsic.data));
-      if (res.has_error()
-          && res
-                 != outcome::failure(
-                     transaction_pool::TransactionPoolError::TX_NOT_FOUND)) {
-        return res.as_failure();
-      }
-    }
-
     auto t_end = std::chrono::high_resolution_clock::now();
 
     logger_->info(
@@ -305,23 +213,11 @@ namespace kagome::consensus {
     auto current_best_block_res =
         block_tree_->getBestContaining(last_finalized_block.hash, std::nullopt);
     BOOST_ASSERT(current_best_block_res.has_value());
-    const auto &current_best_block = current_best_block_res.value();
-
-    // Create new offchain worker for block if it is best only
-    if (current_best_block.number > previous_best_block.number) {
-      auto ocw_res = offchain_worker_api_->offchain_worker(
-          block.header.parent_hash, block.header);
-      if (ocw_res.has_failure()) {
-        logger_->error("Can't spawn offchain worker for block {}: {}",
-                       primitives::BlockInfo(block.header.number, block_hash),
-                       ocw_res.error().message());
-      }
-    }
 
     return outcome::success();
   }
 
-  void BlockExecutorImpl::rollbackBlock(
+  void BlockAppenderImpl::rollbackBlock(
       const primitives::BlockHash &block_hash) {
     auto removal_res = block_tree_->removeLeaf(block_hash);
     if (removal_res.has_error()) {
@@ -332,4 +228,4 @@ namespace kagome::consensus {
     }
   }
 
-}  // namespace kagome::consensus
+  }  // namespace kagome::consensus
