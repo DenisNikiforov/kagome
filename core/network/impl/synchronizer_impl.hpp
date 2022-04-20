@@ -8,6 +8,7 @@
 
 #include "network/synchronizer.hpp"
 
+#include <atomic>
 #include <queue>
 
 #include <libp2p/basic/scheduler.hpp>
@@ -21,6 +22,11 @@
 namespace kagome::application {
   class AppConfiguration;
 }
+
+namespace kagome::storage::trie {
+  class TrieSerializer;
+  class TrieStorage;
+}  // namespace kagome::storage::trie
 
 namespace kagome::network {
 
@@ -62,6 +68,8 @@ namespace kagome::network {
         std::shared_ptr<blockchain::BlockTree> block_tree,
         std::shared_ptr<consensus::BlockAppender> block_appender,
         std::shared_ptr<consensus::BlockExecutor> block_executor,
+        std::shared_ptr<storage::trie::TrieSerializer> serializer,
+        std::shared_ptr<storage::trie::TrieStorage> storage,
         std::shared_ptr<network::Router> router,
         std::shared_ptr<libp2p::basic::Scheduler> scheduler,
         std::shared_ptr<crypto::Hasher> hasher);
@@ -106,6 +114,11 @@ namespace kagome::network {
                     primitives::BlockInfo from,
                     SyncResultHandler &&handler);
 
+    void syncState(const libp2p::peer::PeerId &peer_id,
+                   primitives::BlockInfo block,
+                   common::Buffer &&key,
+                   SyncResultHandler &&handler);
+
    private:
     /// Subscribes handler for block with provided {@param block_info}
     /// {@param handler} will be called When block is received or discarded
@@ -131,13 +144,15 @@ namespace kagome::network {
     /// side-branch for provided finalized block {@param finalized_block}
     void prune(const primitives::BlockInfo &finalized_block);
 
-    const application::AppConfiguration &app_config_;
     std::shared_ptr<blockchain::BlockTree> block_tree_;
     std::shared_ptr<consensus::BlockAppender> block_appender_;
     std::shared_ptr<consensus::BlockExecutor> block_executor_;
+    std::shared_ptr<storage::trie::TrieSerializer> serializer_;
+    std::shared_ptr<storage::trie::TrieStorage> storage_;
     std::shared_ptr<network::Router> router_;
     std::shared_ptr<libp2p::basic::Scheduler> scheduler_;
     std::shared_ptr<crypto::Hasher> hasher_;
+    application::AppConfiguration::SyncMethod sync_method_;
 
     // Metrics
     metrics::RegistryPtr metrics_registry_ = metrics::createRegistry();
@@ -145,6 +160,7 @@ namespace kagome::network {
 
     log::Logger log_ = log::createLogger("Synchronizer", "synchronizer");
 
+    std::atomic_bool state_syncing_ = false;
     bool node_is_shutting_down_ = false;
 
     struct KnownBlock {

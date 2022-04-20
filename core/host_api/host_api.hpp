@@ -95,6 +95,8 @@ namespace kagome::host_api {
      * @return memory span containing scale-encoded storage root
      */
     [[nodiscard]] virtual runtime::WasmSpan ext_storage_root_version_1() = 0;
+    [[nodiscard]] virtual runtime::WasmSpan ext_storage_root_version_2(
+        runtime::WasmI32 state_version) = 0;
 
     /**
      * Commits all existing operations and gets the resulting change
@@ -168,6 +170,10 @@ namespace kagome::host_api {
     [[nodiscard]] virtual runtime::WasmPointer
     ext_trie_blake2_256_ordered_root_version_1(
         runtime::WasmSpan values_data) = 0;
+
+    [[nodiscard]] virtual runtime::WasmPointer
+    ext_trie_blake2_256_ordered_root_version_2(
+        runtime::WasmSpan values_data, runtime::WasmI32 state_version) = 0;
 
     // ------------------------- Memory extensions v1 --------------------------
     /**

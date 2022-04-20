@@ -7,6 +7,7 @@
 #define KAGOME_TEST_CORE_RUNTIME_MOCK_HOST_API_HPP_
 
 #include "host_api/host_api.hpp"
+#include "runtime/types.hpp"
 
 #include <gmock/gmock.h>
 
@@ -106,6 +107,11 @@ namespace kagome::host_api {
     MOCK_METHOD(runtime::WasmSpan, ext_storage_root_version_1, (), (override));
 
     MOCK_METHOD(runtime::WasmSpan,
+                ext_storage_root_version_2,
+                (runtime::WasmI32),
+                (override));
+
+    MOCK_METHOD(runtime::WasmSpan,
                 ext_storage_changes_root_version_1,
                 (runtime::WasmSpan),
                 (override));
@@ -137,6 +143,11 @@ namespace kagome::host_api {
     MOCK_METHOD(runtime::WasmPointer,
                 ext_trie_blake2_256_ordered_root_version_1,
                 (runtime::WasmSpan),
+                (override));
+
+    MOCK_METHOD(runtime::WasmPointer,
+                ext_trie_blake2_256_ordered_root_version_2,
+                (runtime::WasmSpan, runtime::WasmI32),
                 (override));
 
     // -------------------------- hashing methods v1 ---------------------------
