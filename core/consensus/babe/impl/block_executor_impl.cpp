@@ -217,6 +217,12 @@ namespace kagome::consensus {
 
     // block should be applied without last digest which contains the seal
     block_without_seal_digest.header.digest.pop_back();
+    // remove one more digest
+    block_without_seal_digest.header.digest.erase(
+        std::remove_if(block_without_seal_digest.header.digest.begin(),
+                       block_without_seal_digest.header.digest.end(),
+                       [](const auto &dig) { return dig.which() == 8; }),
+        block_without_seal_digest.header.digest.end());
 
     auto parent = block_tree_->getBlockHeader(block.header.parent_hash).value();
 
